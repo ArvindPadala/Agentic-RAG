@@ -89,19 +89,54 @@ def create_deployment_package(
     subprocess.run(f"rm -rf {package_dir}", shell=True)
     subprocess.run(f"mkdir -p {package_dir}", shell=True)
     
-    # Install requirements
+    # Install requirements targeting Lambda's Linux x86_64 environment.
+    #
+    # KEY LEARNING: Cross-platform pip install
+    # ──────────────────────────────────────────────────────────────────────
+    # Packages like pydantic/numpy contain C-extension .so files that are
+    # OS and CPU-architecture specific. Lambda runs on Linux x86_64, but
+    # your Mac would normally install macOS binaries. These flags fix that:
+    #
+    # --platform manylinux2014_x86_64  → fetch the Linux x86_64 wheel
+    # --implementation cp              → CPython (what Lambda uses)
+    # --python-version 312             → match Lambda's python3.12 runtime
+    # --only-binary=:all:              → never compile from source (source
+    #                                    builds always produce local-OS binaries)
+    # -t {package_dir}                 → extract wheel contents here directly
+    #                                    (pip bypasses host-platform checks for -t)
+    #
+    # Confirmed working: produces _pydantic_core.cpython-312-x86_64-linux-gnu.so ✅
+    # ──────────────────────────────────────────────────────────────────────
     if requirements:
-        print(f"   Installing dependencies: {', '.join(requirements)}")
+        print(f"   Installing Linux x86_64 wheels for Python 3.12...")
         req_string = " ".join(requirements)
         result = subprocess.run(
-            f"pip install --quiet {req_string} -t {package_dir}",
+            f"pip install "
+            f"--platform manylinux2014_x86_64 "
+            f"--implementation cp "
+            f"--python-version 312 "
+            f"--only-binary=:all: "
+            f"-t {package_dir} "
+            f"{req_string}",
             shell=True,
             capture_output=True,
             text=True
         )
         if result.returncode != 0:
-            print(f"⚠️ Warning: Some dependencies may have failed to install")
-            print(result.stderr)
+            print(f"❌ ERROR: Failed to install Linux wheels:")
+            print(result.stderr[-1000:])
+            raise RuntimeError("Wheel install failed — cannot build a valid Lambda package.")
+
+        # Verify: confirm we got Linux binaries, not macOS
+        check = subprocess.run(
+            f"find {package_dir} -name '*.so' | head -3",
+            shell=True, capture_output=True, text=True
+        )
+        so_files = check.stdout.strip()
+        if so_files:
+            if "darwin" in so_files:
+                raise RuntimeError(f"❌ macOS binary still in package: {so_files}")
+            print(f"   ✅ Linux binary confirmed: {so_files.split(chr(10))[0].split('/')[-1]}")
     
     # Copy source files
     for source_file in source_files:

@@ -1,3 +1,17 @@
+# ── Generated & local-only files ─────────────────────────────────────────────
+# ChromaDB is rebuilt by running Steps 8–9b — too large to commit (~100MB+)
+chroma_db/
+
+# Lambda deployment zip — rebuilt by Step 3. 7MB binary, not useful in git
+ade_lambda.zip
+
+# Cropped PDF images generated at runtime by visual_grounding_helper.py
+images/
+
+# Cross-session memory — personal to each user's conversations
+memory.json
+
+# ── Course / Weights & Biases ─────────────────────────────────────────────────
 # ignore wandb cache
 **/wandb/*
 **/artifacts/*
