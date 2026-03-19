@@ -1,0 +1,20 @@
+# Core
+boto3>=1.34
+python-dotenv>=1.0
+Pillow>=10.0
+PyMuPDF>=1.23
+requests>=2.31
+
+# Gemini SDK
+google-genai>=1.0
+
+# Vector DB + Local Embeddings
+chromadb>=0.5
+sentence-transformers>=2.7
+
+# Gradio UI
+gradio>=6.0
+
+# LandingAI ADE (Lambda only — not needed for running the agent locally)
+# landingai-ade
+# typing-extensions>=4.7

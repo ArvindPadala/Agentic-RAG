@@ -469,11 +469,22 @@ def update_memory_from_conversation(
         return memory
 
     # Format conversation for summarization
-    conv_text = "\n".join([
-        f"{msg['role'].upper()}: {msg['parts'][0] if isinstance(msg['parts'], list) and msg['parts'] else msg['parts']}"
-        for msg in conversation_history
-        if isinstance(msg.get("parts"), (str, list))
-    ])
+    lines = []
+    for msg in conversation_history:
+        role = getattr(msg, "role", "unknown").upper()
+        parts = getattr(msg, "parts", [])
+        text_parts = []
+        for p in parts:
+            if hasattr(p, "text") and p.text:
+                text_parts.append(p.text)
+            elif hasattr(p, "function_call") and p.function_call:
+                text_parts.append(f"[Call: {p.function_call.name}]")
+            elif hasattr(p, "function_response") and p.function_response:
+                text_parts.append(f"[Response: {p.function_response.name}]")
+        if text_parts:
+            lines.append(f"{role}: {' '.join(text_parts)}")
+
+    conv_text = "\n".join(lines)
 
     extraction_prompt = f"""Analyze this conversation and extract:
 1. A 1-2 sentence summary of what was discussed
