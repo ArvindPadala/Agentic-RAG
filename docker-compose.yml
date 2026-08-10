@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentic_rag_app
+    ports:
+      - "7860:7860"
+    volumes:
+      # Mount ChromaDB locally so index persists
+      - ./chroma_db:/app/chroma_db
+      # Mount memory locally so it persists
+      - ./memory.json:/app/memory.json
+    env_file:
+      - .env
+    restart: unless-stopped
+    command: [ "python", "app.py", "--port", "7860", "--collection", "medical_chunks" ]

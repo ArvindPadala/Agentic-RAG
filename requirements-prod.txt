@@ -1,0 +1,16 @@
+# Core
+boto3==1.42.65
+python-dotenv==1.0.1
+Pillow==10.4.0
+PyMuPDF==1.27.2
+requests==2.32.5
+
+# Gemini SDK
+google-genai==1.66.0
+
+# Vector DB + Local Embeddings
+chromadb==1.5.5
+sentence-transformers==5.2.3
+
+# Gradio UI
+gradio==6.9.0

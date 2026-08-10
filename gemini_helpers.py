@@ -2,17 +2,21 @@
 Gemini + ChromaDB Helper Functions
 ====================================
 This module replaces the AWS Bedrock Knowledge Base with a local ChromaDB vector
-database and Google Gemini embeddings. The goal is to provide the same RAG
+database and local sentence-transformers embeddings. The goal is to provide the same RAG
 (Retrieval-Augmented Generation) capabilities at zero cost.
 
 Key concepts covered here:
   - ChromaDB: an open-source, embedded vector database (no server needed!)
   - Vector embeddings: turning text into numbers that capture semantic meaning
   - Cosine similarity: how ChromaDB finds the "closest" chunks to your query
-  - Gemini text-embedding-004: Google's free embedding model
+  - sentence-transformers: local, free embedding models
 """
 
 import os
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger('gemini_helpers')
 import json
 import boto3
 import chromadb
@@ -30,7 +34,7 @@ from google.genai import types
 
 def init_chroma_collection(
     persist_directory: str = "./chroma_db",
-    collection_name: str = "medical_chunks"
+    collection_name: str = "document_chunks"
 ) -> chromadb.Collection:
     """
     Initialize (or reopen) a persistent ChromaDB collection.
@@ -53,7 +57,7 @@ def init_chroma_collection(
     Returns:
         A ChromaDB Collection object ready for add() and query() calls
     """
-    print(f"📂 Opening ChromaDB at: {persist_directory}")
+    logger.info(f"📂 Opening ChromaDB at: {persist_directory}")
 
     # PersistentClient saves data to disk automatically
     client = chromadb.PersistentClient(path=persist_directory)
@@ -67,9 +71,9 @@ def init_chroma_collection(
 
     count = collection.count()
     if count > 0:
-        print(f"✅ Reopened existing collection '{collection_name}' ({count} documents already indexed)")
+        logger.info(f"✅ Reopened existing collection '{collection_name}' ({count} documents already indexed)")
     else:
-        print(f"✅ Created new empty collection '{collection_name}'")
+        logger.info(f"✅ Created new empty collection '{collection_name}'")
 
     return collection
 
@@ -81,7 +85,7 @@ def init_chroma_collection(
 def load_chunks_from_s3(
     s3_client,
     bucket: str,
-    chunks_prefix: str = "output/medical_chunks/"
+    chunks_prefix: str = "output/chunks/"
 ) -> List[Dict]:
     """
     Download all individual chunk JSON files from S3 into memory.
@@ -112,7 +116,7 @@ def load_chunks_from_s3(
     Returns:
         List of chunk dictionaries
     """
-    print(f"📥 Loading chunks from s3://{bucket}/{chunks_prefix}")
+    logger.info(f"📥 Loading chunks from s3://{bucket}/{chunks_prefix}")
 
     chunks = []
     paginator = s3_client.get_paginator("list_objects_v2")
@@ -130,72 +134,13 @@ def load_chunks_from_s3(
                 chunk_data["s3_key"] = key  # Remember where it came from
                 chunks.append(chunk_data)
             except Exception as e:
-                print(f"   ⚠️ Could not load {key}: {e}")
+                logger.info(f"   ⚠️ Could not load {key}: {e}")
 
-    print(f"✅ Loaded {len(chunks)} chunks from S3")
+    logger.info(f"✅ Loaded {len(chunks)} chunks from S3")
     return chunks
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Section 3: Embedding with Gemini
-# ─────────────────────────────────────────────────────────────────────────────
-
-def embed_texts_with_gemini(
-    gemini_client: genai.Client,
-    texts: List[str],
-    task_type: str = "RETRIEVAL_DOCUMENT",
-    batch_size: int = 50
-) -> List[List[float]]:
-    """
-    Embed a list of texts using Gemini's text-embedding-004 model.
-
-    CONCEPT: What are embeddings?
-    --------------------------------
-    An embedding is a list of numbers (a vector) that represents text meaning.
-    Similar texts produce vectors that are "close" in high-dimensional space.
-
-    Example:
-      "cold symptoms"       → [0.12, -0.34, 0.87, ...]   ← 768 numbers
-      "rhinovirus infection" → [0.11, -0.32, 0.89, ...]   ← very close!
-      "stock market crash"   → [-0.91, 0.42, -0.15, ...]  ← very far!
-
-    Gemini's gemini-embedding-001 is free and produces 3072-dimensional vectors.
-    We batch requests (50 at a time) to stay within API rate limits.
-
-    task_type options:
-      - "RETRIEVAL_DOCUMENT": for text being stored in the database
-      - "RETRIEVAL_QUERY":    for the user's search query (slightly different optimization)
-
-    Args:
-        gemini_client: Initialized Gemini client
-        texts:         List of text strings to embed
-        task_type:     Embedding optimization type
-        batch_size:    How many texts to embed per API call (max 100)
-
-    Returns:
-        List of embedding vectors (each is a list of 768 floats)
-    """
-    all_embeddings = []
-
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        batch_num = i // batch_size + 1
-        total_batches = (len(texts) + batch_size - 1) // batch_size
-        print(f"   🧠 Embedding batch {batch_num}/{total_batches} ({len(batch)} texts)...")
-
-        response = gemini_client.models.embed_content(
-            model="models/gemini-embedding-001",
-            contents=batch,
-            config=types.EmbedContentConfig(task_type=task_type)
-        )
-
-        # Each embedding is a ContentEmbedding object with a .values property
-        batch_embeddings = [e.values for e in response.embeddings]
-        all_embeddings.extend(batch_embeddings)
-
-    return all_embeddings
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Section 4: Indexing Chunks into ChromaDB
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,7 +148,6 @@ def embed_texts_with_gemini(
 def embed_and_index_chunks(
     chunks: List[Dict],
     collection: chromadb.Collection,
-    gemini_client=None,   # No longer used — kept for backward compatibility
     skip_existing: bool = True
 ) -> int:
     """
@@ -241,22 +185,22 @@ def embed_and_index_chunks(
     Returns:
         Number of new chunks indexed
     """
-    print(f"\n📦 Preparing to index {len(chunks)} chunks...")
-    print("   Using: sentence-transformers/all-MiniLM-L6-v2 (local, free, no rate limits)")
+    logger.info(f"\n📦 Preparing to index {len(chunks)} chunks...")
+    logger.info("   Using: sentence-transformers/all-MiniLM-L6-v2 (local, free, no rate limits)")
 
     # Filter out chunks with no text
     valid_chunks = [c for c in chunks if c.get("text", "").strip()]
-    print(f"   └─ {len(valid_chunks)} chunks have non-empty text")
+    logger.info(f"   └─ {len(valid_chunks)} chunks have non-empty text")
 
     if skip_existing:
         existing_ids = set(collection.get()["ids"])
         new_chunks = [c for c in valid_chunks if c.get("chunk_id", "") not in existing_ids]
-        print(f"   └─ {len(new_chunks)} new chunks to add (skipping {len(valid_chunks) - len(new_chunks)} already indexed)")
+        logger.info(f"   └─ {len(new_chunks)} new chunks to add (skipping {len(valid_chunks) - len(new_chunks)} already indexed)")
     else:
         new_chunks = valid_chunks
 
     if not new_chunks:
-        print("✅ All chunks already indexed — nothing to do!")
+        logger.info("✅ All chunks already indexed — nothing to do!")
         return 0
 
     texts = [c["text"] for c in new_chunks]
@@ -275,15 +219,15 @@ def embed_and_index_chunks(
         })
 
     # Add to ChromaDB — NO embeddings= arg → ChromaDB auto-embeds locally
-    print(f"\n🧠 Embedding {len(new_chunks)} chunks locally (no API call)...")
+    logger.info(f"\n🧠 Embedding {len(new_chunks)} chunks locally (no API call)...")
     collection.add(
         ids=ids,
         documents=texts,   # ChromaDB embeds these automatically
         metadatas=metadatas
     )
 
-    print(f"\n✅ Indexed {len(new_chunks)} chunks into ChromaDB!")
-    print(f"   Total collection size: {collection.count()} documents")
+    logger.info(f"\n✅ Indexed {len(new_chunks)} chunks into ChromaDB!")
+    logger.info(f"   Total collection size: {collection.count()} documents")
     return len(new_chunks)
 
 
@@ -294,7 +238,6 @@ def embed_and_index_chunks(
 def search_chroma(
     query: str,
     collection: chromadb.Collection,
-    gemini_client=None,   # No longer used — kept for backward compatibility
     n_results: int = 5
 ) -> List[Dict]:
     """
@@ -408,7 +351,7 @@ def save_memory(memory: Dict, memory_file: str = "memory.json") -> None:
     """
     with open(memory_file, "w") as f:
         json.dump(memory, f, indent=2)
-    print(f"💾 Memory saved to {memory_file}")
+    logger.info(f"💾 Memory saved to {memory_file}")
 
 
 def format_memory_for_prompt(memory: Dict) -> str:
@@ -527,9 +470,9 @@ Conversation:
             memory["facts"].extend(extracted["facts"])
             memory["facts"] = list(set(memory["facts"]))[-20:]  # Keep 20 unique facts
 
-        print("✅ Memory updated from conversation")
+        logger.info("✅ Memory updated from conversation")
 
     except Exception as e:
-        print(f"⚠️ Could not extract memory: {e}")
+        logger.info(f"⚠️ Could not extract memory: {e}")
 
     return memory

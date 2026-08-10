@@ -9,6 +9,10 @@ import time
 import subprocess
 import zipfile
 import os
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger('lambda_helpers')
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
@@ -41,7 +45,7 @@ def create_or_update_lambda_role(
             AssumeRolePolicyDocument=json.dumps(assume_policy),
             Description=description
         )
-        print(f"✅ Created IAM role: {role_name}")
+        logger.info(f"✅ Created IAM role: {role_name}")
         role_arn = role["Role"]["Arn"]
         
         # Attach necessary policies
@@ -60,7 +64,7 @@ def create_or_update_lambda_role(
     except iam_client.exceptions.EntityAlreadyExistsException:
         role = iam_client.get_role(RoleName=role_name)
         role_arn = role["Role"]["Arn"]
-        print(f"ℹ️ Using existing role: {role_name}")
+        logger.info(f"ℹ️ Using existing role: {role_name}")
     
     return role_arn
 
@@ -83,7 +87,7 @@ def create_deployment_package(
     Returns:
         Path to created zip file
     """
-    print(f"📦 Creating deployment package: {output_zip}")
+    logger.info(f"📦 Creating deployment package: {output_zip}")
     
     # Clean and create package directory
     subprocess.run(f"rm -rf {package_dir}", shell=True)
@@ -108,7 +112,7 @@ def create_deployment_package(
     # Confirmed working: produces _pydantic_core.cpython-312-x86_64-linux-gnu.so ✅
     # ──────────────────────────────────────────────────────────────────────
     if requirements:
-        print(f"   Installing Linux x86_64 wheels for Python 3.12...")
+        logger.info(f"   Installing Linux x86_64 wheels for Python 3.12...")
         req_string = " ".join(requirements)
         result = subprocess.run(
             f"pip install "
@@ -123,8 +127,8 @@ def create_deployment_package(
             text=True
         )
         if result.returncode != 0:
-            print(f"❌ ERROR: Failed to install Linux wheels:")
-            print(result.stderr[-1000:])
+            logger.info(f"❌ ERROR: Failed to install Linux wheels:")
+            logger.info(result.stderr[-1000:])
             raise RuntimeError("Wheel install failed — cannot build a valid Lambda package.")
 
         # Verify: confirm we got Linux binaries, not macOS
@@ -136,15 +140,15 @@ def create_deployment_package(
         if so_files:
             if "darwin" in so_files:
                 raise RuntimeError(f"❌ macOS binary still in package: {so_files}")
-            print(f"   ✅ Linux binary confirmed: {so_files.split(chr(10))[0].split('/')[-1]}")
+            logger.info(f"   ✅ Linux binary confirmed: {so_files.split(chr(10))[0].split('/')[-1]}")
     
     # Copy source files
     for source_file in source_files:
-        print(f"   Adding source: {source_file}")
+        logger.info(f"   Adding source: {source_file}")
         subprocess.run(f"cp {source_file} {package_dir}/", shell=True)
     
     # Create zip
-    print(f"   Creating zip archive...")
+    logger.info(f"   Creating zip archive...")
     subprocess.run(
         f"cd {package_dir} && zip -r ../{output_zip} . > /dev/null 2>&1",
         shell=True
@@ -155,7 +159,7 @@ def create_deployment_package(
     
     # Get zip size
     zip_size = os.path.getsize(output_zip) / (1024 * 1024)
-    print(f"✅ Package created: {output_zip} ({zip_size:.1f} MB)")
+    logger.info(f"✅ Package created: {output_zip} ({zip_size:.1f} MB)")
     
     return output_zip
 
@@ -167,7 +171,7 @@ def deploy_lambda_function(
     role_arn: str,
     handler: str,
     env_vars: Dict[str, str],
-    runtime: str = "python3.10",
+    runtime: str = "python3.12",
     timeout: int = 900,
     memory_size: int = 3008,
     architectures: List[str] = ["x86_64"]
@@ -178,7 +182,7 @@ def deploy_lambda_function(
     Returns:
         Function configuration dict
     """
-    print(f"🚀 Deploying Lambda function: {function_name}")
+    logger.info(f"🚀 Deploying Lambda function: {function_name}")
     
     # Read zip file
     with open(zip_file, "rb") as f:
@@ -198,11 +202,11 @@ def deploy_lambda_function(
             Environment={"Variables": env_vars},
             Publish=True
         )
-        print(f"✅ Lambda function created: {function_name}")
+        logger.info(f"✅ Lambda function created: {function_name}")
         
     except lambda_client.exceptions.ResourceConflictException:
         # Function exists, update it
-        print(f"ℹ️ Function exists, updating...")
+        logger.info(f"ℹ️ Function exists, updating...")
         
         # Update code
         lambda_client.update_function_code(
@@ -210,7 +214,7 @@ def deploy_lambda_function(
             ZipFile=zipped_code,
             Publish=True
         )
-        print("   Code updated, waiting for deployment...")
+        logger.info("   Code updated, waiting for deployment...")
         time.sleep(10)
         
         # Update configuration
@@ -222,7 +226,7 @@ def deploy_lambda_function(
             Handler=handler,
             Runtime=runtime
         )
-        print(f"✅ Lambda function updated: {function_name}")
+        logger.info(f"✅ Lambda function updated: {function_name}")
     
     return response
 
@@ -244,7 +248,7 @@ def setup_s3_trigger(
         function_name: Lambda function to trigger
         suffix: Optional file suffix filter (e.g., '.pdf')
     """
-    print(f"⚙️ Setting up S3 trigger: s3://{bucket}/{prefix} → {function_name}")
+    logger.info(f"⚙️ Setting up S3 trigger: s3://{bucket}/{prefix} → {function_name}")
     
     # Get Lambda function ARN
     function_config = lambda_client.get_function(FunctionName=function_name)
@@ -259,9 +263,9 @@ def setup_s3_trigger(
             Principal="s3.amazonaws.com",
             SourceArn=f"arn:aws:s3:::{bucket}"
         )
-        print(f"   ✅ Added invoke permission for S3")
+        logger.info(f"   ✅ Added invoke permission for S3")
     except Exception as e:
-        print(f"   ℹ️ Permission may already exist: {e}")
+        logger.info(f"   ℹ️ Permission may already exist: {e}")
     
     # Configure filter rules
     filter_rules = [{"Name": "prefix", "Value": prefix}]
@@ -283,7 +287,7 @@ def setup_s3_trigger(
         }
     )
     
-    print(f"✅ S3 trigger set for s3://{bucket}/{prefix} → {function_name}")
+    logger.info(f"✅ S3 trigger set for s3://{bucket}/{prefix} → {function_name}")
 
 
 def invoke_lambda_sync(
@@ -303,7 +307,7 @@ def invoke_lambda_sync(
     Returns:
         Response from Lambda function
     """
-    print(f"⚡ Invoking Lambda: {function_name}")
+    logger.info(f"⚡ Invoking Lambda: {function_name}")
     start_time = time.time()
     
     invoke_params = {
@@ -328,20 +332,20 @@ def invoke_lambda_sync(
     elapsed = time.time() - start_time
     
     if status_code == 200:
-        print(f"✅ Lambda completed successfully in {elapsed:.1f} seconds")
+        logger.info(f"✅ Lambda completed successfully in {elapsed:.1f} seconds")
     else:
-        print(f"⚠️ Lambda returned status code: {status_code}")
+        logger.info(f"⚠️ Lambda returned status code: {status_code}")
     
     # Show logs if requested
     if show_logs and "LogResult" in response:
         import base64
         log_data = base64.b64decode(response["LogResult"]).decode("utf-8")
-        print("\n📋 Lambda Logs:")
-        print("-" * 60)
+        logger.info("\n📋 Lambda Logs:")
+        logger.info("-" * 60)
         for line in log_data.split("\n")[-20:]:  # Last 20 lines
             if line.strip():
-                print(line)
-        print("-" * 60)
+                logger.info(line)
+        logger.info("-" * 60)
     
     return result
 
@@ -363,7 +367,7 @@ def monitor_s3_folder(
     Returns:
         List of file keys found
     """
-    print(f"📁 Monitoring s3://{bucket}/{prefix}")
+    logger.info(f"📁 Monitoring s3://{bucket}/{prefix}")
     
     response = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix)
     
@@ -373,10 +377,10 @@ def monitor_s3_folder(
             if not obj["Key"].endswith("/"):
                 files.append(obj["Key"])
     
-    print(f"   Found {len(files)} files")
+    logger.info(f"   Found {len(files)} files")
     
     if expected_count and len(files) < expected_count:
-        print(f"   ⏳ Waiting for {expected_count - len(files)} more files...")
+        logger.info(f"   ⏳ Waiting for {expected_count - len(files)} more files...")
     
     return files
 
@@ -402,16 +406,16 @@ def upload_folder_to_s3(
     Returns:
         Number of files uploaded
     """
-    print(f"📤 Uploading {local_folder} → s3://{bucket}/{s3_prefix}")
+    logger.info(f"📤 Uploading {local_folder} → s3://{bucket}/{s3_prefix}")
     if skip_existing:
-        print("   (Skipping files that already exist in S3)")
+        logger.info("   (Skipping files that already exist in S3)")
     
     uploaded = 0
     skipped = 0
     local_path = Path(local_folder)
     
     if not local_path.exists():
-        print(f"❌ Folder not found: {local_folder}")
+        logger.info(f"❌ Folder not found: {local_folder}")
         return 0
     
     files = list(local_path.glob("**/*"))
@@ -430,7 +434,7 @@ def upload_folder_to_s3(
             if skip_existing:
                 try:
                     s3_client.head_object(Bucket=bucket, Key=s3_key)
-                    print(f"   ⏭️ Skipping (already exists): {relative_path}")
+                    logger.info(f"   ⏭️ Skipping (already exists): {relative_path}")
                     skipped += 1
                     continue
                 except s3_client.exceptions.ClientError:
@@ -438,15 +442,15 @@ def upload_folder_to_s3(
                     pass
             
             # Upload file
-            print(f"   ⬆️ Uploading: {relative_path}")
+            logger.info(f"   ⬆️ Uploading: {relative_path}")
             s3_client.upload_file(str(file_path), bucket, s3_key)
             uploaded += 1
     
     # Summary
     if skipped > 0:
-        print(f"✅ Uploaded {uploaded} files, skipped {skipped} existing files")
+        logger.info(f"✅ Uploaded {uploaded} files, skipped {skipped} existing files")
     else:
-        print(f"✅ Uploaded {uploaded} files")
+        logger.info(f"✅ Uploaded {uploaded} files")
     
     return uploaded
 
@@ -477,8 +481,8 @@ def monitor_lambda_processing(
     
     log_group = f"/aws/lambda/{function_name}"
     
-    print(f"⏳ Monitoring Lambda processing...")
-    print(" To stop monitoring, press esc followed by double clicking i\n")
+    logger.info(f"⏳ Monitoring Lambda processing...")
+    logger.info(" To stop monitoring, press esc followed by double clicking i\n")
     
     # Track processed files
     processed_files = set()
@@ -500,7 +504,7 @@ def monitor_lambda_processing(
                     file_name = message.split("Completed pipeline for ")[1].split(" →")[0]
                     if file_name not in processed_files:
                         processed_files.add(file_name)
-                        print(f"✅ Processed: {file_name}")
+                        logger.info(f"✅ Processed: {file_name}")
                 
                 # Track files being processed (but don't print)
                 elif "🤖 Starting ADE parsing for" in message:
@@ -512,15 +516,15 @@ def monitor_lambda_processing(
                     file_name = message.split("Skipping ")[1].split(" -")[0]
                     if file_name not in skipped_files:
                         skipped_files.add(file_name)
-                        print(f"⏭️ Skipped (already exists): {file_name}")
+                        logger.info(f"⏭️ Skipped (already exists): {file_name}")
                 
                 # Show errors
                 elif "❌ Error processing" in message:
-                    print(f"   {message}")
+                    logger.info(f"   {message}")
                     try:
                         file_name = message.split("Error processing ")[1].split(":")[0]
                         error_files.add(file_name)
-                    except:
+                    except Exception:
                         pass
                 
                 start_time = max(start_time, event["timestamp"] + 1)
@@ -528,21 +532,21 @@ def monitor_lambda_processing(
             time.sleep(5)
             
     except KeyboardInterrupt:
-        print(f"\n⛔ Monitoring stopped by user")
+        logger.info(f"\n⛔ Monitoring stopped by user")
     
     # Show summary from logs
-    print(f"\n📊 Lambda Processing Summary:")
-    print(f"   Processed: {len(processed_files)} files")
-    print(f"   Skipped: {len(skipped_files)} files")
-    print(f"   Errors: {len(error_files)} files")
+    logger.info(f"\n📊 Lambda Processing Summary:")
+    logger.info(f"   Processed: {len(processed_files)} files")
+    logger.info(f"   Skipped: {len(skipped_files)} files")
+    logger.info(f"   Errors: {len(error_files)} files")
     
     if processed_files:
-        print("\n   Files processed in this session:")
+        logger.info("\n   Files processed in this session:")
         for f in sorted(processed_files):
-            print(f"   - {f}")
+            logger.info(f"   - {f}")
     
     # Check what's actually in the output folder
-    print(f"\n📁 Checking S3 {output_prefix} folder...")
+    logger.info(f"\n📁 Checking S3 {output_prefix} folder...")
     response = s3_client.list_objects_v2(
         Bucket=bucket_name,
         Prefix=output_prefix,
@@ -552,7 +556,7 @@ def monitor_lambda_processing(
     output_files = []
     if "Contents" in response:
         output_files = [obj["Key"] for obj in response["Contents"] if not obj["Key"].endswith("/")]
-        print(f"   Total files in {output_prefix}: {len(output_files)}")
+        logger.info(f"   Total files in {output_prefix}: {len(output_files)}")
         
         # Organize by folder
         folders = {}
@@ -570,21 +574,21 @@ def monitor_lambda_processing(
         
         # Display organized summary
         if folders:
-            print(f"\n   Files by folder:")
+            logger.info(f"\n   Files by folder:")
             for folder, files in sorted(folders.items()):
                 if folder == "root":
-                    print(f"   {output_prefix} (root): {len(files)} files")
+                    logger.info(f"   {output_prefix} (root): {len(files)} files")
                 else:
-                    print(f"   {output_prefix}{folder}/: {len(files)} files")
+                    logger.info(f"   {output_prefix}{folder}/: {len(files)} files")
             
             # Option to show all files
             show_all = input("\n   Show all output files? (y/n): ").lower() == 'y'
             if show_all:
-                print("\n   All output files:")
+                logger.info("\n   All output files:")
                 for key in sorted(output_files):
-                    print(f"   - {key}")
+                    logger.info(f"   - {key}")
     else:
-        print(f"   No files found in {output_prefix} yet")
+        logger.info(f"   No files found in {output_prefix} yet")
     
     return {
         "processed": len(processed_files),

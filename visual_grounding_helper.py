@@ -50,7 +50,7 @@ def render_pdf_page(pdf_bytes: bytes, page_num: int, dpi: int = 150):
         doc.close()
         return img, page_width, page_height
     except Exception as e:
-        print(f"Error rendering PDF page: {e}")
+        logger.info(f"Error rendering PDF page: {e}")
         return None, None, None
 
 
@@ -83,12 +83,12 @@ def extract_chunk_image(
         S3 presigned URL of the cropped chunk image or None
     """
     if not DYNAMIC_CROPPING_ENABLED:
-        print("⚠️ Dynamic cropping disabled. Install PyMuPDF and Pillow.")
+        logger.info("⚠️ Dynamic cropping disabled. Install PyMuPDF and Pillow.")
         return None
     
     try:
         # Check if chunk image already exists
-        image_key = f"output/medical_chunk_images/{source_document}_{chunk_id}.png"
+        image_key = f"output/chunk_images/{source_document}_{chunk_id}.png"
         try:
             s3_client.head_object(Bucket=bucket, Key=image_key)
             # Image exists, return presigned URL
@@ -98,7 +98,7 @@ def extract_chunk_image(
                 ExpiresIn=3600
             )
             return presigned_url
-        except:
+        except Exception:
             pass  # Image doesn't exist, create it
         
         # Download PDF from S3
@@ -173,7 +173,7 @@ def extract_chunk_image(
         return presigned_url
         
     except Exception as e:
-        print(f"Error extracting chunk image: {e}")
+        logger.info(f"Error extracting chunk image: {e}")
         return None
 
 
@@ -306,7 +306,7 @@ def create_annotated_image_from_pdf(
         return presigned_url
         
     except Exception as e:
-        print(f"Error creating annotated image: {e}")
+        logger.info(f"Error creating annotated image: {e}")
         return None
 
 
@@ -349,7 +349,7 @@ def get_or_create_annotated_image(
                 ExpiresIn=3600  # URL valid for 1 hour
             )
             return presigned_url
-        except:
+        except Exception:
             pass  # File doesn't exist, create it
     
     # Download source PDF
@@ -372,7 +372,7 @@ def get_or_create_annotated_image(
         return url
         
     except Exception as e:
-        print(f"Error processing annotation: {e}")
+        logger.info(f"Error processing annotation: {e}")
         return None
 
 

@@ -1,24 +1,24 @@
-# Agentic Medical RAG Chatbot
+# Agentic RAG System with Visual Grounding
 
-> An end-to-end **agentic RAG** (Retrieval-Augmented Generation) pipeline that processes medical PDFs, indexes semantic chunks into a local vector database, and runs a Gemini-powered chatbot with **visual grounding** — highlighting the exact PDF regions that back every answer.
+> An end-to-end **agentic RAG** (Retrieval-Augmented Generation) pipeline that processes complex PDFs, indexes semantic chunks into a local vector database, and runs a Gemini-powered chatbot with **visual grounding** — highlighting the exact PDF regions that back every answer.
 
 ---
 
 ## What It Does
 
-You ask a medical question in plain English. The agent:
+You ask a question about your documents in plain English. The agent:
 
-1. **Calls a search tool** → queries 759 indexed chunks from 8 peer-reviewed medical papers
+1. **Calls a search tool** → queries indexed chunks from your documents
 2. **Retrieves top-5 matches** → using cosine similarity over `sentence-transformers` embeddings
 3. **Generates an answer** → Gemini 2.5 Flash reasons over the retrieved content
 4. **Provides visual grounding** → returns a presigned S3 URL pointing to a cropped, highlighted image of the exact PDF region that contains the evidence
 
 ```
-You: "What treatments are effective for the common cold?"
+You: "What was the Q3 revenue for the enterprise segment?"
        ↓
-Agent calls: search_knowledge_base(query="common cold treatments")
+Agent calls: search_knowledge_base(query="Q3 revenue enterprise segment")
        ↓
-ChromaDB returns: 5 relevant chunks from medical papers
+ChromaDB returns: 5 relevant chunks from financial reports
        ↓
 Gemini synthesizes: Evidence-based answer with citations + page numbers
        ↓
@@ -29,15 +29,17 @@ Output: Answer + 🔍 Visual Reference: https://s3.aws.../chunk_image.png
 
 ## Architecture
 
+![Architecture](images/architecture_1.png)
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    DOCUMENT PIPELINE (one-time)                 │
 │                                                                 │
-│  medical/*.pdf  →  S3 (input/)  →  AWS Lambda                   │
+│  documents/*.pdf  →  S3 (input/)  →  AWS Lambda                 │
 │                                       ↓                          │
 │                              LandingAI ADE (parsing)            │
 │                                       ↓                          │
-│                         S3 (output/medical_chunks/*.json)        │
+│                         S3 (output/chunks/*.json)               │
 │                                       ↓                          │
 │                    ChromaDB (local) ← sentence-transformers      │
 └─────────────────────────────────────────────────────────────────┘
@@ -92,9 +94,9 @@ Output: Answer + 🔍 Visual Reference: https://s3.aws.../chunk_image.png
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/agentic-medical-rag.git
-cd agentic-medical-rag
-pip install boto3 python-dotenv Pillow PyMuPDF google-genai chromadb
+git clone https://github.com/ArvindPadala/Agentic-RAG.git
+cd Agentic-RAG
+pip install -r requirements.txt
 ```
 
 ### 2. Configure environment
@@ -143,36 +145,42 @@ python agent.py --help
 ## Project Structure
 
 ```
-agentic-medical-rag/
+Agentic-RAG/
 ├── agent.py                    # Standalone CLI agent (no Jupyter required)
-├── Lab-6-Gemini.ipynb          # Step-by-step notebook (setup + exploration)
+├── app.py                      # Gradio web UI with visual grounding panel
+├── pipeline_setup.ipynb        # Step-by-step notebook (setup + exploration)
 ├── gemini_helpers.py           # ChromaDB init, search, memory, embedding utils
 ├── lambda_helpers.py           # Lambda deployment, S3 triggers, IAM role setup
 ├── visual_grounding_helper.py  # PDF cropping and S3 image upload for grounding
 ├── ade_s3_handler.py           # Lambda function: S3 trigger → LandingAI ADE → chunks
-├── medical/                    # 8 peer-reviewed medical PDFs (common cold research)
+├── documents/                  # Example PDFs for the knowledge base
 ├── project_challenges.md       # Debugging log: issues faced and how they were resolved
 └── .env.example                # Environment variable template
 ```
 
 ---
 
+## Demo
+
+![Gradio Web UI Demo](images/gradio_ui.png)
+
+---
+
 ## Sample Output
 
 ```
-You: "What vitamin is effective against colds?"
+You: "What was the year-over-year revenue growth for the enterprise segment?"
 
-   🔧 search_knowledge_base(query='vitamin common cold effectiveness')
+   🔧 search_knowledge_base(query='enterprise segment year over year revenue growth')
 
-Agent: Based on the research, **Vitamin C** has been studied extensively for
-cold prevention and treatment:
+Agent: Based on the Q3 earnings report, the enterprise segment saw significant growth:
 
-- **Preventive effect**: Regular supplementation reduced cold duration by
-  8% in adults (Vitamin_C_for_Preventing_and_Treating_the_Common_Cold, Page 4)
+- **Revenue growth**: The enterprise segment grew by 24% year-over-year, driven by strong cloud adoption.
+  (Q3_Financial_Results, Page 4)
   🔍 Visual Reference: https://...s3.amazonaws.com/...chunk_image.png
 
-- **High-dose therapy**: 1g/day showed modest but consistent effects across
-  multiple trials (Prevention_and_treatment_of_the_common_cold, Page 7)
+- **Operating margin**: The operating margin for this segment also improved by 300 basis points.
+  (Q3_Financial_Results, Page 7)
   🔍 Visual Reference: https://...s3.amazonaws.com/...chunk_image.png
 ```
 

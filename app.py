@@ -18,11 +18,13 @@ import argparse
 import requests
 from io import BytesIO
 from PIL import Image
-
 import gradio as gr
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger("app")
 
 from agent import (
-    load_environment,
     create_gemini_client,
     create_s3_client,
     load_chroma_collection,
@@ -38,7 +40,7 @@ from gemini_helpers import load_memory, save_memory, update_memory_from_conversa
 # S3 image URL pattern — matches presigned URLs like:
 # https://bucket.s3.amazonaws.com/output/.../chunk.png?X-Amz-Algorithm=...
 _S3_URL_RE = re.compile(
-    r"https://[^\s\]\[\"'>]+\.amazonaws\.com/[^\s\]\[\"'>]+\.png(?:\?[^\s\]\[\"'>]+)?"
+    r"https://[^\s\]\[\"'>()]+\.amazonaws\.com/[^\s\]\[\"'>()]+\.png(?:\?[^\s\]\[\"'>()]+)?"
 )
 
 
@@ -218,13 +220,8 @@ def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file
                 conversation_history.pop()
             return history, conversation_history, [], format_memory_status(memory)
 
-        # Extract visual grounding images before cleaning text
+        # Extract visual grounding image URLs from the response text
         image_urls = extract_image_urls(raw_response)
-        images = []
-        for url in image_urls:
-            img = fetch_image(url)
-            if img:
-                images.append(img)
 
         # Clean raw URLs from the visible response text
         display_response = clean_response(raw_response)
@@ -232,7 +229,7 @@ def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file
         # Append assistant message in Gradio 6.x messages format
         history = history + [{"role": "assistant", "content": display_response}]
 
-        return history, conversation_history, images, format_memory_status(memory)
+        return history, conversation_history, image_urls, format_memory_status(memory)
 
     return chat
 
@@ -255,7 +252,7 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file):
     chat_fn = make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file)
     save_fn = make_save_fn(gemini_client, memory, memory_file)
 
-    with gr.Blocks(title="Medical RAG Agent") as demo:
+    with gr.Blocks(title="Document RAG Agent") as demo:
 
         # ── Session state ──────────────────────────────────────────────────
         conv_state    = gr.State([])
@@ -266,7 +263,7 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file):
             with gr.Column(scale=4):
                 gr.Markdown(
                     """
-                    # 🩺 Medical RAG Agent
+                    # 📄 Document RAG Agent
                     *Powered by Gemini · ChromaDB · LandingAI ADE*
                     """
                 )
@@ -293,7 +290,7 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file):
 
                 with gr.Row():
                     user_input = gr.Textbox(
-                        placeholder="Ask about medical documents… (e.g. 'What are cold symptoms?')",
+                        placeholder="Ask about your documents… (e.g. 'What was the Q3 revenue?')",
                         show_label=False,
                         lines=2,
                         scale=5,
@@ -324,11 +321,11 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file):
         # ── Example questions ──────────────────────────────────────────────
         gr.Examples(
             examples=[
-                ["What are the main symptoms of the common cold?"],
-                ["What treatments are effective for cold relief?"],
-                ["Does Vitamin C prevent colds?"],
-                ["How is influenza different from the common cold?"],
-                ["What does the CT study show about sinus involvement in colds?"],
+                ["What were the key takeaways from the Q3 earnings report?"],
+                ["What is the company's year-over-year revenue growth?"],
+                ["Summarize the risk factors mentioned in the document."],
+                ["Who are the main competitors listed?"],
+                ["What does the chart on page 4 indicate about operating margins?"],
             ],
             inputs=user_input,
             label="Try these questions:",
@@ -385,34 +382,34 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Gradio UI for Medical RAG Agent")
+    parser = argparse.ArgumentParser(description="Gradio UI for Document RAG Agent")
     parser.add_argument("--share",       action="store_true", help="Create a public share link")
     parser.add_argument("--port",        type=int, default=7860, help="Local port (default: 7860)")
-    parser.add_argument("--collection",  default="medical_chunks", help="ChromaDB collection")
+    parser.add_argument("--collection",  default="document_chunks", help="ChromaDB collection")
     parser.add_argument("--chroma-path", default="./chroma_db",    help="ChromaDB folder")
     parser.add_argument("--memory-file", default="memory.json",    help="Memory JSON file")
     parser.add_argument("--model",       default="models/gemini-2.5-flash", help="Gemini model")
     args = parser.parse_args()
 
-    print("\n🚀 Starting Medical RAG Agent UI...")
-    print("─" * 40)
+    logger.info("\n🚀 Starting Document RAG Agent UI...")
+    logger.info("─" * 40)
 
-    env               = load_environment()
-    gemini_client     = create_gemini_client(env["GEMINI_API_KEY"])
-    s3_client         = create_s3_client(env)
+    gemini_client     = create_gemini_client(settings.GEMINI_API_KEY)
+    s3_client         = create_s3_client()
     collection        = load_chroma_collection(args.collection, args.chroma_path)
-    search_fn, search_tool = build_search_tool(collection, gemini_client, s3_client, env["S3_BUCKET"])
+    search_fn, search_tool = build_search_tool(collection, gemini_client, s3_client, settings.S3_BUCKET_NAME)
     tool_map          = {"search_knowledge_base": search_fn}
     memory            = load_memory(args.memory_file)
     generation_config = build_agent_config(search_tool, memory)
 
-    print("─" * 40)
-    print(f"✅ All systems ready — launching Gradio on port {args.port}")
+    logger.info("─" * 40)
+    logger.info(f"✅ All systems ready — launching Gradio on port {args.port}")
     if args.share:
-        print("🌐 Share link will be printed below (valid 72 hours)")
+        logger.info("🌐 Share link will be printed below (valid 72 hours)")
 
     demo = build_ui(gemini_client, generation_config, tool_map, memory, args.memory_file)
     demo.launch(
+        server_name="0.0.0.0",
         server_port=args.port,
         share=args.share,
         show_error=True,

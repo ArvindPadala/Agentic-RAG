@@ -1,8 +1,8 @@
 """
-agent.py — Medical Document Chatbot (standalone script)
+agent.py — Document RAG Chatbot (standalone script)
 ========================================================
 
-Extracted from Lab-6-Gemini.ipynb. Runs the full Gemini-powered medical
+Extracted from pipeline_setup.ipynb. Runs the full Gemini-powered document
 chatbot from the terminal — no Jupyter required.
 
 Usage:
@@ -12,7 +12,7 @@ Usage:
 
 Prerequisites (already done if you ran the notebook):
     - .env file with GEMINI_API_KEY, AWS_ACCESS_KEY_ID, etc.
-    - chroma_db/ folder with 759 indexed medical chunks
+    - chroma_db/ folder with indexed document chunks
     - memory.json (created automatically on first exit)
 """
 
@@ -21,7 +21,11 @@ import json
 import argparse
 from datetime import datetime
 
-from dotenv import load_dotenv
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger('agent')
+
 from google import genai
 from google.genai import types as genai_types
 
@@ -37,54 +41,27 @@ from visual_grounding_helper import extract_chunk_image
 
 
 # ── 1. Environment ────────────────────────────────────────────────────────────
-def load_environment() -> dict:
-    """Load and validate all required environment variables."""
-    load_dotenv()
-
-    required = [
-        "GEMINI_API_KEY",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_REGION",
-        "S3_BUCKET",
-    ]
-
-    env = {}
-    missing = []
-    for var in required:
-        value = os.getenv(var)
-        if value:
-            env[var] = value
-        else:
-            missing.append(var)
-
-    if missing:
-        print(f"❌ Missing environment variables: {', '.join(missing)}")
-        print("   Check your .env file.")
-        raise SystemExit(1)
-
-    print("✅ Environment loaded")
-    return env
+# Environment is now loaded securely via config.py
 
 
 # ── 2. Clients ────────────────────────────────────────────────────────────────
 def create_gemini_client(api_key: str) -> genai.Client:
     """Create and validate the Gemini client."""
     client = genai.Client(api_key=api_key)
-    print("✅ Gemini client ready")
+    logger.info("✅ Gemini client ready")
     return client
 
 
-def create_s3_client(env: dict):
+def create_s3_client():
     """Create a boto3 S3 client for visual grounding (PDF downloads)."""
     import boto3
     session = boto3.Session(
-        aws_access_key_id=env["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=env["AWS_SECRET_ACCESS_KEY"],
-        region_name=env["AWS_REGION"],
+        aws_access_key_id=settings.AWS_ACCESS_KEY_ID,
+        aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
+        region_name=settings.AWS_REGION,
     )
     client = session.client("s3")
-    print("✅ AWS S3 client ready")
+    logger.info("✅ AWS S3 client ready")
     return client
 
 
@@ -97,10 +74,10 @@ def load_chroma_collection(collection_name: str, chroma_path: str = "./chroma_db
     )
     count = collection.count()
     if count == 0:
-        print(f"⚠️  Collection '{collection_name}' is empty.")
-        print("   Run the notebook Steps 9a–9b first to index your documents.")
+        logger.info(f"⚠️  Collection '{collection_name}' is empty.")
+        logger.info("   Run the notebook Steps 9a–9b first to index your documents.")
     else:
-        print(f"✅ ChromaDB ready — {count} chunks indexed")
+        logger.info(f"✅ ChromaDB ready — {count} chunks indexed")
     return collection
 
 
@@ -116,13 +93,12 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str):
 
     def search_knowledge_base(query: str) -> str:
         """
-        Search the medical document knowledge base.
+        Search the document knowledge base.
         Returns text chunks with page numbers and visual reference image URLs.
         """
         results = search_chroma(
             query=query,
             collection=collection,
-            gemini_client=gemini_client,
             n_results=5,
         )
 
@@ -148,22 +124,30 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str):
             # Visual grounding: crop the PDF region and get a presigned URL
             cropped_image_url = None
             if source_doc and bucket and s3_client:
-                source_pdf_key = f"input/medical/{source_doc}.pdf"
-                try:
-                    s3_client.head_object(Bucket=bucket, Key=source_pdf_key)
-                    cropped_image_url = extract_chunk_image(
-                        s3_client=s3_client,
-                        bucket=bucket,
-                        source_pdf_key=source_pdf_key,
-                        bbox=bbox,
-                        page_num=page,
-                        chunk_id=chunk_id,
-                        source_document=source_doc,
-                        highlight=True,
-                        padding=10,
-                    )
-                except Exception:
-                    pass  # Visual grounding is optional — skip if PDF not in S3
+                # Try the new 'documents' path first, fallback to old 'medical' path
+                possible_keys = [
+                    f"input/documents/{source_doc}.pdf",
+                    f"input/medical/{source_doc}.pdf"
+                ]
+                
+                for source_pdf_key in possible_keys:
+                    try:
+                        s3_client.head_object(Bucket=bucket, Key=source_pdf_key)
+                        cropped_image_url = extract_chunk_image(
+                            s3_client=s3_client,
+                            bucket=bucket,
+                            source_pdf_key=source_pdf_key,
+                            bbox=bbox,
+                            page_num=page,
+                            chunk_id=chunk_id,
+                            source_document=source_doc,
+                            highlight=True,
+                            padding=10,
+                        )
+                        break  # Found and processed successfully
+                    except Exception:
+                        continue  # Try the next prefix
+
 
             if cropped_image_url:
                 result_text = (
@@ -189,8 +173,8 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str):
     tool_declaration = genai_types.FunctionDeclaration(
         name="search_knowledge_base",
         description=(
-            "Search the medical document knowledge base for relevant information "
-            "about the common cold, its symptoms, causes, treatments, and prevention. "
+            "Search the document knowledge base for relevant information "
+            "about the user's documents. "
             "Returns text content with page numbers and visual references (image URLs) "
             "showing the exact location in the source PDF."
         ),
@@ -215,11 +199,11 @@ def build_agent_config(search_tool, memory: dict) -> genai_types.GenerateContent
     """Build the GenerateContentConfig with system prompt and tools."""
     memory_context = format_memory_for_prompt(memory)
 
-    system_prompt = f"""You are a medical document analysis assistant specializing in the common cold.
-You have access to 8 peer-reviewed medical research papers via the search_knowledge_base tool.
+    system_prompt = f"""You are an expert document analysis assistant.
+You have access to a repository of documents via the search_knowledge_base tool.
 
 Your capabilities:
-- Search and analyze medical documents from the knowledge base
+- Search and analyze documents from the knowledge base
 - Provide visual grounding: show EXACT page numbers and image URLs from source PDFs
 - Remember user preferences and conversation history
 - Provide evidence-based, cited responses
@@ -228,7 +212,7 @@ IMPORTANT: When search results include visual grounding information, you MUST in
 - The page number where information was found
 - The visual reference URL (so the user can see the highlighted text in context)
 
-Always call search_knowledge_base before answering medical questions.
+Always call search_knowledge_base before answering questions about the documents.
 Always cite your sources.
 {memory_context}"""
 
@@ -291,7 +275,7 @@ def run_agent_turn(
                 tool_name = fc.name
                 tool_args = dict(fc.args) if fc.args else {}
 
-                print(f"   🔧 {tool_name}({', '.join(f'{k}={repr(v)}' for k, v in tool_args.items())})")
+                logger.info(f"   🔧 {tool_name}({', '.join(f'{k}={repr(v)}' for k, v in tool_args.items())})")
 
                 if tool_name in tool_map:
                     tool_result = tool_map[tool_name](**tool_args)
@@ -328,13 +312,13 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
     conversation_history = []  # Fresh history every session
     conversation_num = 0
 
-    print()
-    print("=" * 70)
-    print("  Medical Agent — Interactive Chat with Visual Grounding (Gemini)")
-    print("=" * 70)
-    print("  Ask questions about medical documents.")
-    print("  Type 'exit' to end (memory will be saved).")
-    print("=" * 70)
+    logger.info()
+    logger.info("=" * 70)
+    logger.info("  Document Agent — Interactive Chat with Visual Grounding (Gemini)")
+    logger.info("=" * 70)
+    logger.info("  Ask questions about your documents.")
+    logger.info("  Type 'exit' to end (memory will be saved).")
+    logger.info("=" * 70)
 
     while True:
         try:
@@ -344,22 +328,22 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
                 continue
 
             if user_input.lower() in ["exit", "quit", "bye", "q"]:
-                print("\n⏳ Saving memory from this session...")
+                logger.info("\n⏳ Saving memory from this session...")
                 updated_memory = update_memory_from_conversation(
                     memory=memory,
                     conversation_history=conversation_history,
                     gemini_client=gemini_client,
                 )
                 save_memory(updated_memory, memory_file)
-                print("👋 Goodbye! (Memory saved — I'll remember this next time)")
+                logger.info("👋 Goodbye! (Memory saved — I'll remember this next time)")
                 break
 
             conversation_num += 1
-            print(f"\n{'─' * 70}")
-            print(f"Question #{conversation_num} [{datetime.now().strftime('%H:%M:%S')}]")
-            print(f"  \"{user_input}\"")
-            print(f"{'─' * 70}")
-            print("\nAgent Response (processing...)\n")
+            logger.info(f"\n{'─' * 70}")
+            logger.info(f"Question #{conversation_num} [{datetime.now().strftime('%H:%M:%S')}]")
+            logger.info(f"  \"{user_input}\"")
+            logger.info(f"{'─' * 70}")
+            logger.info("\nAgent Response (processing...)\n")
 
             result = run_agent_turn(
                 user_message=user_input,
@@ -369,21 +353,21 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
                 tool_map=tool_map,
                 model=model,
             )
-            print(result)
-            print(f"\n{'=' * 70}")
+            logger.info(result)
+            logger.info(f"\n{'=' * 70}")
 
         except KeyboardInterrupt:
-            print("\n\n💾 Saving memory before exit...")
+            logger.info("\n\n💾 Saving memory before exit...")
             updated_memory = update_memory_from_conversation(
                 memory, conversation_history, gemini_client
             )
             save_memory(updated_memory, memory_file)
-            print("Conversation interrupted. Goodbye!")
+            logger.info("Conversation interrupted. Goodbye!")
             break
 
         except Exception as e:
-            print(f"\n❌ Error: {e}")
-            print("   Please try again or type 'exit' to quit.")
+            logger.info(f"\n❌ Error: {e}")
+            logger.info("   Please try again or type 'exit' to quit.")
 
 
 # ── 8. Single-question Mode ───────────────────────────────────────────────────
@@ -391,7 +375,7 @@ def ask_single_question(question: str, gemini_client, generation_config,
                          tool_map: dict, model: str) -> str:
     """Answer one question and return the result (no interactive loop)."""
     conversation_history = []
-    print(f"\n🔍 Question: {question}\n")
+    logger.info(f"\n🔍 Question: {question}\n")
     answer = run_agent_turn(
         user_message=question,
         conversation_history=conversation_history,
@@ -417,8 +401,8 @@ def main():
     parser.add_argument(
         "--collection",
         type=str,
-        default="medical_chunks",
-        help="ChromaDB collection name to use (default: medical_chunks)",
+        default="document_chunks",
+        help="ChromaDB collection name to use (default: document_chunks)",
     )
     parser.add_argument(
         "--chroma-path",
@@ -440,37 +424,34 @@ def main():
     )
     args = parser.parse_args()
 
-    print("\n🚀 Starting Medical Agent...")
-    print("─" * 40)
+    logger.info("\n🚀 Starting Medical Agent...")
+    logger.info("─" * 40)
 
-    # Step 1: Load environment
-    env = load_environment()
-
-    # Step 2: Create clients
-    gemini_client = create_gemini_client(env["GEMINI_API_KEY"])
-    s3_client = create_s3_client(env)
-
-    # Step 3: Load ChromaDB
-    collection = load_chroma_collection(args.collection, args.chroma_path)
-
-    # Step 4: Build search tool
+    # Setup dependencies
+    gemini_client = create_gemini_client(settings.GEMINI_API_KEY)
+    s3_client = create_s3_client()
+    collection = load_chroma_collection(
+        collection_name=args.collection,
+        chroma_path=args.chroma_path,
+    )
+    bucket = settings.S3_BUCKET_NAME
     search_fn, search_tool = build_search_tool(
         collection=collection,
         gemini_client=gemini_client,
         s3_client=s3_client,
-        bucket=env["S3_BUCKET"],
+        bucket=bucket,
     )
     tool_map = {"search_knowledge_base": search_fn}
 
     # Step 5: Load memory
     memory = load_memory(args.memory_file)
     sessions = len(memory.get("session_summaries", []))
-    print(f"✅ Memory loaded — {sessions} previous session(s) remembered")
+    logger.info(f"✅ Memory loaded — {sessions} previous session(s) remembered")
 
     # Step 6: Build agent config
     generation_config = build_agent_config(search_tool, memory)
 
-    print("─" * 40)
+    logger.info("─" * 40)
 
     # Step 7: Run
     if args.question:
@@ -482,7 +463,7 @@ def main():
             tool_map=tool_map,
             model=args.model,
         )
-        print(f"\nAnswer:\n{answer}")
+        logger.info(f"\nAnswer:\n{answer}")
     else:
         # Interactive chat loop
         run_chat(

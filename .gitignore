@@ -6,7 +6,10 @@ chroma_db/
 ade_lambda.zip
 
 # Cropped PDF images generated at runtime by visual_grounding_helper.py
-images/
+images/*
+!images/architecture*.png
+!images/tool.png
+!images/flow_ade_handler.png
 
 # Cross-session memory — personal to each user's conversations
 memory.json

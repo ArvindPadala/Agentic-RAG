@@ -1,0 +1,54 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Data and Models
+chroma_db/
+memory.json
+images/
+input/
+output/
+documents/
+
+# Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# MacOS
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/

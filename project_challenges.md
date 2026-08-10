@@ -1,6 +1,6 @@
-# sc-landingai Lab-6 — Project Challenges & Resolutions
+# Agentic-RAG — Project Challenges & Resolutions
 
-A detailed log of every major technical challenge encountered while building the **Medical Chatbot with Gemini + ChromaDB** (the free-tier rebuild of AWS Lab 6), how each was diagnosed, what the root cause was, and how it was fixed — including how AI-assisted debugging was used throughout.
+A detailed log of every major technical challenge encountered while building the **Agentic RAG System with Gemini + ChromaDB**, how each was diagnosed, what the root cause was, and how it was fixed — including how AI-assisted debugging was used throughout.
 
 ---
 
@@ -33,7 +33,7 @@ When Lambda tried to import the macOS `.so` binary, it found the file physically
 
 ### How Was It Solved?
 
-The `pip install` command in [lambda_helpers.py](file:///Users/arvindpadala/Projects/sc-landingai/lambda_helpers.py) was updated to explicitly target Linux:
+The `pip install` command in [lambda_helpers.py](./lambda_helpers.py) was updated to explicitly target Linux:
 
 ```python
 # BEFORE (installs macOS binaries on Mac — wrong for Lambda):
@@ -85,7 +85,7 @@ CloudWatch log's `INIT_START` entry showed `"Runtime: python3.10"`. The AI agent
 
 Two changes were made:
 1. Updated the Lambda runtime in the deployment cell from `"python3.10"` → `"python3.12"`
-2. Updated the [deploy_lambda_function](file:///Users/arvindpadala/Projects/sc-landingai/lambda_helpers.py#163-228) call to also push the runtime configuration change (not just the code zip), using `lambda_client.update_function_configuration(Runtime="python3.12")`
+2. Updated the [deploy_lambda_function](./lambda_helpers.py#L163-L228) call to also push the runtime configuration change (not just the code zip), using `lambda_client.update_function_configuration(Runtime="python3.12")`
 
 ### What We Learned
 
@@ -120,7 +120,7 @@ The error code `429 RESOURCE_EXHAUSTED` and the specific metric name `embed_cont
 
 Switched from Gemini API embeddings to **ChromaDB's built-in local sentence-transformers** (`all-MiniLM-L6-v2`), which runs entirely on-device with no API calls:
 
-**[gemini_helpers.py](file:///Users/arvindpadala/Projects/sc-landingai/gemini_helpers.py) — [embed_and_index_chunks](file:///Users/arvindpadala/Projects/sc-landingai/gemini_helpers.py#203-288) (before):**
+**[gemini_helpers.py](./gemini_helpers.py) — [embed_and_index_chunks](./gemini_helpers.py#L203-L288) (before):**
 ```python
 embeddings = embed_texts_with_gemini(gemini_client, texts, "RETRIEVAL_DOCUMENT")
 collection.add(ids=ids, embeddings=embeddings, documents=texts, metadatas=metadatas)
@@ -133,7 +133,7 @@ collection.add(ids=ids, documents=texts, metadatas=metadatas)
 # Just omit the embeddings= argument — ChromaDB handles it automatically
 ```
 
-**[gemini_helpers.py](file:///Users/arvindpadala/Projects/sc-landingai/gemini_helpers.py) — [search_chroma](file:///Users/arvindpadala/Projects/sc-landingai/gemini_helpers.py#294-362) (before):**
+**[gemini_helpers.py](./gemini_helpers.py) — [search_chroma](./gemini_helpers.py#L294-L362) (before):**
 ```python
 embedding = embed_texts_with_gemini(gemini_client, [query], "RETRIEVAL_QUERY")
 results = collection.query(query_embeddings=embedding, ...)
@@ -244,11 +244,11 @@ conversation_history = []  # Reset so every run starts clean
 
 ### What Was the Issue?
 
-After the AI agent programmatically fixed the notebook file ([Lab-6-Gemini.ipynb](file:///Users/arvindpadala/Projects/sc-landingai/Lab-6-Gemini.ipynb)) on disk using Python — replacing the dict-based `conversation_history` with `types.Content` objects — the notebook still ran the old broken code. Even after a kernel restart.
+After the AI agent programmatically fixed the notebook file ([Lab-6-Gemini.ipynb](./Lab-6-Gemini.ipynb)) on disk using Python — replacing the dict-based `conversation_history` with `types.Content` objects — the notebook still ran the old broken code. Even after a kernel restart.
 
 ### What Was Happening?
 
-VS Code keeps an **in-memory representation** of any open [.ipynb](file:///Users/arvindpadala/Projects/sc-landingai/Lab-6.ipynb) file. When the file is modified externally (e.g., by a Python script), VS Code may either:
+VS Code keeps an **in-memory representation** of any open [.ipynb](./Lab-6.ipynb) file. When the file is modified externally (e.g., by a Python script), VS Code may either:
 - Prompt "File changed on disk — reload?" (if the user dismisses this, the old version stays active)
 - Or on save, write its in-memory version **back over** the disk file
 
@@ -269,9 +269,9 @@ The user **closed the notebook file** in VS Code and **reopened it**. This force
 
 ### What We Learned
 
-- Never rely on programmatic [.ipynb](file:///Users/arvindpadala/Projects/sc-landingai/Lab-6.ipynb) file edits taking effect while the notebook is open in VS Code
+- Never rely on programmatic [.ipynb](./Lab-6.ipynb) file edits taking effect while the notebook is open in VS Code
 - The reliable workflow: make the edit → close the file in VS Code → reopen it
-- For Python helper files ([.py](file:///Users/arvindpadala/Projects/sc-landingai/lambda_helpers.py)), programmatic edits work fine since VS Code doesn't cache their execution state the same way
+- For Python helper files ([.py](./lambda_helpers.py)), programmatic edits work fine since VS Code doesn't cache their execution state the same way
 - When a notebook fix "doesn't stick," always verify what's actually on disk vs. what VS Code is displaying
 
 ---

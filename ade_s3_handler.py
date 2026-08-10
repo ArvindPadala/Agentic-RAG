@@ -1,4 +1,16 @@
+"""
+Lambda S3 Event Handler for Document Parsing
+============================================
+This module is designed to run as an AWS Lambda function. It is triggered when
+a new PDF is uploaded to the S3 input bucket. It calls the LandingAI ADE API
+to parse the document, then stores the extracted text and layout data back to S3.
+"""
+
 import os
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger('ade_s3_handler')
 import json
 import boto3
 from pathlib import Path
@@ -7,35 +19,35 @@ from landingai_ade import LandingAIADE
 
 s3 = boto3.client("s3")
 
-VISION_AGENT_API_KEY = os.environ.get("VISION_AGENT_API_KEY")
-ADE_MODEL = os.environ.get("ADE_MODEL", "dpt-2-latest")
-INPUT_FOLDER = os.environ.get("INPUT_FOLDER", "input/")
-OUTPUT_FOLDER = os.environ.get("OUTPUT_FOLDER", "output/")
-FORCE_REPROCESS = os.environ.get("FORCE_REPROCESS", "false").lower() == "true"
+VISION_AGENT_API_KEY = settings.VISION_AGENT_API_KEY
+ADE_MODEL = settings.ADE_MODEL
+INPUT_FOLDER = settings.INPUT_FOLDER
+OUTPUT_FOLDER = settings.OUTPUT_FOLDER
+FORCE_REPROCESS = settings.FORCE_REPROCESS
 
 client = LandingAIADE(apikey=VISION_AGENT_API_KEY)
 
-def ensure_s3_folders(bucket: str):
+def ensure_s3_folders(bucket: str) -> None:
     for folder in [INPUT_FOLDER, OUTPUT_FOLDER]:
         try:
             s3.put_object(Bucket=bucket, Key=folder)
-            print(f"✅ Ensured folder exists: s3://{bucket}/{folder}")
+            logger.info(f"✅ Ensured folder exists: s3://{bucket}/{folder}")
         except Exception as e:
-            print(f"⚠️ Could not ensure folder {folder}: {e}")
+            logger.info(f"⚠️ Could not ensure folder {folder}: {e}")
 
-def ade_handler(event, context):
+def ade_handler(event: dict, context) -> dict:
     """
     AWS Lambda handler for automatically parsing documents uploaded to S3/input/
     and saving Markdown results to S3/output/ with preserved folder structure.
     
     File Organization:
-    - input/medical/doc.pdf → 
-        - output/medical/doc.md (markdown)
-        - output/medical_grounding/doc_grounding.json (visual data)
-        - output/medical_chunks/doc_*.json (individual chunks)
-    
-    Works correctly with any folder name including:
-    - medical, medical_records, biomedical, etc.
+    - input/documents/doc.pdf → 
+        - output/documents/doc.md (markdown)
+        - output/documents_grounding/doc_grounding.json (visual data)
+        - output/documents_chunks/doc_*.json (individual chunks)
+
+    The subfolder inside `input/` is preserved. 
+    - documents, financial_reports, legal, etc.
     - invoices, invoice_data, etc.
     - Any custom folder structure
     """
@@ -47,21 +59,21 @@ def ade_handler(event, context):
         
         # Skip folder creation events
         if key.endswith("/"):
-            print(f"⏩ Skipping folder: {key}")
+            logger.info(f"⏩ Skipping folder: {key}")
             continue
             
         doc_id = os.path.basename(key)
         
         # Skip if no filename
         if not doc_id:
-            print(f"⏩ Skipping empty filename: {key}")
+            logger.info(f"⏩ Skipping empty filename: {key}")
             continue
 
-        print(f"🚀 Lambda triggered for new upload: {doc_id}")
+        logger.info(f"🚀 Lambda triggered for new upload: {doc_id}")
         ensure_s3_folders(bucket)
 
         if not key.startswith(INPUT_FOLDER):
-            print(f"⏩ Skipping non-input file: {key}")
+            logger.info(f"⏩ Skipping non-input file: {key}")
             continue
 
         # Extract relative path from input folder to preserve folder structure
@@ -86,7 +98,7 @@ def ade_handler(event, context):
         if not FORCE_REPROCESS:
             try:
                 s3.head_object(Bucket=bucket, Key=output_key)
-                print(f"⏭️ Skipping {doc_id} - already processed (output exists: {output_key})")
+                logger.info(f"⏭️ Skipping {doc_id} - already processed (output exists: {output_key})")
                 results.append({
                     "source": f"s3://{bucket}/{key}",
                     "output": f"s3://{bucket}/{output_key}",
@@ -99,7 +111,7 @@ def ade_handler(event, context):
                 pass
 
         try:
-            print(f"📥 Fetching s3://{bucket}/{key}")
+            logger.info(f"📥 Fetching s3://{bucket}/{key}")
             obj = s3.get_object(Bucket=bucket, Key=key)
             file_bytes = obj["Body"].read()
 
@@ -107,14 +119,14 @@ def ade_handler(event, context):
             tmp_path.write_bytes(file_bytes)
 
             # Start parsing
-            print(f"🤖 Starting ADE parsing for {doc_id} (model={ADE_MODEL})")
+            logger.info(f"🤖 Starting ADE parsing for {doc_id} (model={ADE_MODEL})")
             response = client.parse(document=tmp_path, model=ADE_MODEL)
             markdown = response.markdown
-            print(f"✅ Finished parsing document: {doc_id}")
+            logger.info(f"✅ Finished parsing document: {doc_id}")
 
-            print(f"⬆️ Uploading parsed Markdown → s3://{bucket}/{output_key}")
+            logger.info(f"⬆️ Uploading parsed Markdown → s3://{bucket}/{output_key}")
             if subfolder and subfolder != '.':
-                print(f"   Preserved folder structure: {subfolder}/")
+                logger.info(f"   Preserved folder structure: {subfolder}/")
             s3.put_object(
                 Bucket=bucket,
                 Key=output_key,
@@ -127,7 +139,7 @@ def ade_handler(event, context):
             path_parts = Path(output_key).parts
             
             if len(path_parts) >= 2:
-                # Extract base folder structure (e.g., 'output/medical' or 'output/medical_records')
+                # Extract base folder structure (e.g., 'output/documents' or 'output/financial_reports')
                 base_folder = str(Path(*path_parts[:2]))  # First two parts: output/foldername
                 relative_path = Path(*path_parts[2:]) if len(path_parts) > 2 else Path(path_parts[-1])
                 
@@ -209,8 +221,8 @@ def ade_handler(event, context):
                 
                 # Only save if we have actual chunk data
                 if grounding_data['chunks']:
-                    print(f"📍 Uploading visual grounding data → s3://{bucket}/{grounding_key}")
-                    print(f"   Found {len(grounding_data['chunks'])} chunks with grounding info")
+                    logger.info(f"📍 Uploading visual grounding data → s3://{bucket}/{grounding_key}")
+                    logger.info(f"   Found {len(grounding_data['chunks'])} chunks with grounding info")
                     
                     # Save as clean JSON
                     s3.put_object(
@@ -219,10 +231,10 @@ def ade_handler(event, context):
                         Body=json.dumps(grounding_data, indent=2).encode("utf-8"),
                         ContentType="application/json"
                     )
-                    print(f"✅ Saved grounding data: {grounding_key}")
+                    logger.info(f"✅ Saved grounding data: {grounding_key}")
                     
                     # Create individual chunk JSON files for Knowledge Base
-                    print(f"📦 Creating individual chunk files for Knowledge Base...")
+                    logger.info(f"📦 Creating individual chunk files for Knowledge Base...")
                     chunk_count = 0
                     for chunk in chunks_data:
                         chunk_id = chunk.get('id', '')
@@ -259,12 +271,12 @@ def ade_handler(event, context):
                         )
                         chunk_count += 1
                     
-                    print(f"✅ Created {chunk_count} chunk files in {chunks_folder}")
+                    logger.info(f"✅ Created {chunk_count} chunk files in {chunks_folder}")
                 else:
-                    print(f"⚠️ No chunks found in response for grounding data")
+                    logger.info(f"⚠️ No chunks found in response for grounding data")
                     
             except Exception as e:
-                print(f"⚠️ Could not save grounding data: {e}")
+                logger.info(f"⚠️ Could not save grounding data: {e}")
 
             results.append({
                 "source": f"s3://{bucket}/{key}",
@@ -272,15 +284,15 @@ def ade_handler(event, context):
                 "status": "success"
             })
 
-            print(f"🎉 Completed pipeline for {doc_id} → {output_key} (clean name: {filename_without_ext}.md)")
+            logger.info(f"🎉 Completed pipeline for {doc_id} → {output_key} (clean name: {filename_without_ext}.md)")
 
         except Exception as e:
-            print(f"❌ Error processing {doc_id}: {e}")
+            logger.info(f"❌ Error processing {doc_id}: {e}")
             results.append({
                 "source": f"s3://{bucket}/{key}",
                 "error": str(e),
                 "status": "failed"
             })
 
-    print("🏁 All records processed.")
+    logger.info("🏁 All records processed.")
     return {"status": "ok", "results": results}
