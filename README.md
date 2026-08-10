@@ -117,7 +117,7 @@ VISION_AGENT_API_KEY=your_landingai_api_key
 
 ### 3. Run the document pipeline (one-time setup)
 
-Open `Lab-6-Gemini.ipynb` and run Steps 1–9. This:
+Open `pipeline_setup.ipynb` and run Steps 1–9. This:
 - Deploys the Lambda function (Steps 3–5)
 - Uploads PDFs to S3 and triggers document parsing (Steps 7)
 - Indexes 759 chunks into ChromaDB with local embeddings (Steps 8–9)

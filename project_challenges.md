@@ -244,11 +244,11 @@ conversation_history = []  # Reset so every run starts clean
 
 ### What Was the Issue?
 
-After the AI agent programmatically fixed the notebook file ([Lab-6-Gemini.ipynb](./Lab-6-Gemini.ipynb)) on disk using Python — replacing the dict-based `conversation_history` with `types.Content` objects — the notebook still ran the old broken code. Even after a kernel restart.
+After the AI agent programmatically fixed the notebook file ([pipeline_setup.ipynb](./pipeline_setup.ipynb)) on disk using Python — replacing the dict-based `conversation_history` with `types.Content` objects — the notebook still ran the old broken code. Even after a kernel restart.
 
 ### What Was Happening?
 
-VS Code keeps an **in-memory representation** of any open [.ipynb](./Lab-6.ipynb) file. When the file is modified externally (e.g., by a Python script), VS Code may either:
+VS Code keeps an **in-memory representation** of any open [.ipynb](./pipeline_setup.ipynb) file. When the file is modified externally (e.g., by a Python script), VS Code may either:
 - Prompt "File changed on disk — reload?" (if the user dismisses this, the old version stays active)
 - Or on save, write its in-memory version **back over** the disk file
 
@@ -258,7 +258,7 @@ This meant the programmatic fix written to disk was silently overwritten by VS C
 
 The agent verified via `grep` that the correct `genai_types.Content` code was on disk:
 ```bash
-grep -c "genai_types.Content" Lab-6-Gemini.ipynb  # returned 1 → fix IS on disk
+grep -c "genai_types.Content" pipeline_setup.ipynb  # returned 1 → fix IS on disk
 ```
 
 But the notebook still ran old code. This ruled out a code issue and pointed to a VS Code caching problem.
@@ -269,7 +269,7 @@ The user **closed the notebook file** in VS Code and **reopened it**. This force
 
 ### What We Learned
 
-- Never rely on programmatic [.ipynb](./Lab-6.ipynb) file edits taking effect while the notebook is open in VS Code
+- Never rely on programmatic [.ipynb](./pipeline_setup.ipynb) file edits taking effect while the notebook is open in VS Code
 - The reliable workflow: make the edit → close the file in VS Code → reopen it
 - For Python helper files ([.py](./lambda_helpers.py)), programmatic edits work fine since VS Code doesn't cache their execution state the same way
 - When a notebook fix "doesn't stick," always verify what's actually on disk vs. what VS Code is displaying
