@@ -16,7 +16,6 @@ Prerequisites (already done if you ran the notebook):
     - memory.json (created automatically on first exit)
 """
 
-import os
 import json
 import argparse
 from datetime import datetime

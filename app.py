@@ -15,9 +15,6 @@ Run:
 import re
 import sys
 import argparse
-import requests
-from io import BytesIO
-from PIL import Image
 import gradio as gr
 from config import settings
 from utils.logger import get_logger
@@ -75,14 +72,6 @@ def extract_image_urls(text: str) -> list[str]:
     return urls
 
 
-def fetch_image(url: str) -> Image.Image | None:
-    """Download a presigned S3 URL and return a PIL Image (None on failure)."""
-    try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        return Image.open(BytesIO(resp.content)).convert("RGB")
-    except Exception:
-        return None
 
 
 def clean_response(text: str) -> str:

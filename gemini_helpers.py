@@ -12,7 +12,7 @@ Key concepts covered here:
   - sentence-transformers: local, free embedding models
 """
 
-import os
+
 from config import settings
 from utils.logger import get_logger
 
