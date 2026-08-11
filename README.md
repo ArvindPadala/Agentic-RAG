@@ -204,9 +204,3 @@ See [`project_challenges.md`](./project_challenges.md) for a detailed log of eve
 - **Cross-platform AWS Lambda packaging** — pip platform flags for binary wheels
 - **Visual grounding** — connecting bounding box metadata from document parsing to rendered PDF crops
 - **Debugging production AI systems** — isolating failures across cloud, SDK, and local layers
-
----
-
-## License
-
-Apache 2.0 — based on the [DeepLearning.AI Short Courses](https://www.deeplearning.ai/short-courses/) framework, modified and extended independently.
