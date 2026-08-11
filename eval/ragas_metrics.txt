@@ -1,0 +1,5 @@
+Baseline Vector Search Metrics:
+{'faithfulness': nan, 'answer_relevancy': nan}
+
+Hybrid Agent Metrics:
+{'faithfulness': nan, 'answer_relevancy': nan}

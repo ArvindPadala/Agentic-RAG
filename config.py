@@ -16,6 +16,11 @@ class Config:
     def __init__(self):
         # API Keys
         self.GEMINI_API_KEY = self._get_required("GEMINI_API_KEY")
+        self.GEMINI_API_KEY_2 = self._get_optional("GEMINI_API_KEY_2")
+        self.GEMINI_API_KEYS = [self.GEMINI_API_KEY]
+        if self.GEMINI_API_KEY_2:
+            self.GEMINI_API_KEYS.append(self.GEMINI_API_KEY_2)
+            
         self.VISION_AGENT_API_KEY = self._get_optional("VISION_AGENT_API_KEY")
 
         # AWS Configuration (Local RAG)

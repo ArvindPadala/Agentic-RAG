@@ -9,19 +9,20 @@ from agent import run_agent_turn, build_search_tool, create_s3_client, build_age
 # noqa: E402
 from gemini_helpers import init_chroma_collection
 # noqa: E402
+from llm_router import GeminiRouter
+# noqa: E402
 from config import settings
 
 
 def main():
     print("Loading Golden Dataset...")
-    try:
-        df = pd.read_csv("eval/golden_dataset.csv")
-    except FileNotFoundError:
-        print("eval/golden_dataset.csv not found. Run generate_testset.py first.")
+    if not os.path.exists("eval/golden_dataset.csv"):
+        print("Error: eval/golden_dataset.csv not found. Please run eval/generate_testset.py first.")
         return
+    df = pd.read_csv("eval/golden_dataset.csv")
 
     print("Initializing Agent pipeline...")
-    gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    gemini_client = GeminiRouter(api_keys=settings.GEMINI_API_KEYS)
     s3 = create_s3_client()
     coll = init_chroma_collection("./chroma_db", "document_chunks")
     search_fn, search_tool = build_search_tool(coll, gemini_client, s3, settings.S3_BUCKET_NAME)

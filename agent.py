@@ -43,12 +43,13 @@ from visual_grounding_helper import extract_chunk_image
 # Environment is now loaded securely via config.py
 
 
-# ── 2. Clients ────────────────────────────────────────────────────────────────
-def create_gemini_client(api_key: str) -> genai.Client:
-    """Create and validate the Gemini client."""
-    client = genai.Client(api_key=api_key)
-    logger.info("✅ Gemini client ready")
-    return client
+from llm_router import GeminiRouter
+
+def create_gemini_router(api_keys: list) -> GeminiRouter:
+    """Create and validate the robust Gemini router."""
+    router = GeminiRouter(api_keys=api_keys)
+    logger.info("✅ Gemini router ready")
+    return router
 
 
 def create_s3_client():
@@ -239,7 +240,7 @@ def run_agent_turn(
     gemini_client,
     generation_config,
     tool_map: dict,
-    model: str = "models/gemini-2.5-flash",
+    model: str = "models/gemini-3.6-flash",
 ) -> str:
     """
     Process one user message through the full agent loop.
@@ -436,7 +437,7 @@ def main():
     logger.info("─" * 40)
 
     # Setup dependencies
-    gemini_client = create_gemini_client(settings.GEMINI_API_KEY)
+    gemini_client = GeminiRouter(api_keys=settings.GEMINI_API_KEYS)
     s3_client = create_s3_client()
     collection = load_chroma_collection(
         collection_name=args.collection,
