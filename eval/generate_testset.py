@@ -27,7 +27,8 @@ def generate_golden_dataset():
     random.seed(42)
     sample_indices = random.sample(range(len(documents)), min(15, len(documents)))
 
-    client = genai.Client(api_key=settings.GEMINI_API_KEY)
+    from llm_router import GeminiRouter
+    client = GeminiRouter(api_keys=settings.GEMINI_API_KEYS)
 
     dataset = []
 
@@ -52,7 +53,7 @@ Context:
 
         try:
             response = client.models.generate_content(
-                model='gemini-3.5-flash',
+                model='models/gemini-3.6-flash',
                 contents=prompt,
             )
             # Basic JSON extraction

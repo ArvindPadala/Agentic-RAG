@@ -23,7 +23,7 @@ from upload_handler import make_upload_fn
 logger = get_logger("app")
 
 from agent import (
-    create_gemini_client,
+    create_gemini_router,
     create_s3_client,
     load_chroma_collection,
     build_search_tool,
@@ -405,7 +405,7 @@ def main():
     logger.info("\n🚀 Starting Document RAG Agent UI...")
     logger.info("─" * 40)
 
-    gemini_client     = create_gemini_client(settings.GEMINI_API_KEY)
+    gemini_client     = create_gemini_router(settings.GEMINI_API_KEYS)
     s3_client         = create_s3_client()
     collection        = load_chroma_collection(args.collection, args.chroma_path)
     search_fn, search_tool = build_search_tool(collection, gemini_client, s3_client, settings.S3_BUCKET_NAME)

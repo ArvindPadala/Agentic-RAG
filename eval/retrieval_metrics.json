@@ -1,0 +1,18 @@
+Loading Golden Dataset...
+2026-08-11 13:59:22 | INFO     | gemini_helpers | 📂 Opening ChromaDB at: ./chroma_db
+2026-08-11 13:59:22 | INFO     | gemini_helpers | ✅ Reopened existing collection 'document_chunks' (369 documents already indexed)
+
+=== Retrieval Metrics ===
+Total Questions: 13
+
+--- Baseline (Vector Only) ---
+MRR@5:      0.7949
+Recall@1:   0.7692
+Recall@3:   0.8462
+Recall@5:   0.8462
+
+--- Hybrid (Vector + BM25) ---
+MRR@5:      0.8846
+Recall@1:   0.8462
+Recall@3:   0.9231
+Recall@5:   0.9231
