@@ -28,7 +28,10 @@ def get_bm25_index(collection, collection_name):
     _BM25_CACHE[collection_name] = index_data
     return index_data
 
+from langsmith import traceable
+import json
 
+@traceable(run_type="retriever")
 def search_chroma_hybrid(query: str, collection, n_results: int = 5) -> list[dict]:
     if collection.count() == 0:
         return []

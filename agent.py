@@ -233,7 +233,10 @@ Always cite your sources.
     )
 
 
+from langsmith import traceable
+
 # ── 6. Agent Loop ─────────────────────────────────────────────────────────────
+@traceable(run_type="chain")
 def run_agent_turn(
     user_message: str,
     conversation_history: list,

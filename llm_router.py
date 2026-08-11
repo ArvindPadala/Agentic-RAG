@@ -4,6 +4,7 @@ from google import genai
 from google.genai.errors import APIError
 from utils.logger import get_logger
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from langsmith import traceable
 
 logger = get_logger("llm_router")
 
@@ -72,6 +73,7 @@ class GeminiRouter:
         retry=retry_if_exception_type(APIError),
         reraise=True
     )
+    @traceable(run_type="llm")
     def generate_content(self, contents: Any, config: Any = None, **kwargs):
         """
         Wraps genai.models.generate_content with routing and backoff logic.

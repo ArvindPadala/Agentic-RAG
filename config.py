@@ -35,6 +35,11 @@ class Config:
         self.OUTPUT_FOLDER = self._get_optional("OUTPUT_FOLDER", "output/")
         self.FORCE_REPROCESS = self._get_optional("FORCE_REPROCESS", "false").lower() == "true"
 
+        # LangSmith Observability
+        self.LANGCHAIN_TRACING_V2 = self._get_optional("LANGCHAIN_TRACING_V2", "false")
+        self.LANGCHAIN_API_KEY = self._get_optional("LANGCHAIN_API_KEY")
+        self.LANGCHAIN_PROJECT = self._get_optional("LANGCHAIN_PROJECT", "Agentic_RAG")
+
     def _get_required(self, key: str) -> str:
         value = os.environ.get(key)
         if not value:
