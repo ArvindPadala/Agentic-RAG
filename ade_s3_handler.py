@@ -27,6 +27,7 @@ FORCE_REPROCESS = settings.FORCE_REPROCESS
 
 client = LandingAIADE(apikey=VISION_AGENT_API_KEY)
 
+
 def ensure_s3_folders(bucket: str) -> None:
     for folder in [INPUT_FOLDER, OUTPUT_FOLDER]:
         try:
@@ -34,6 +35,7 @@ def ensure_s3_folders(bucket: str) -> None:
             logger.info(f"✅ Ensured folder exists: s3://{bucket}/{folder}")
         except Exception as e:
             logger.info(f"⚠️ Could not ensure folder {folder}: {e}")
+
 
 def ade_handler(event: dict, context) -> dict:
     """
@@ -56,14 +58,14 @@ def ade_handler(event: dict, context) -> dict:
     for record in event.get("Records", []):
         bucket = record["s3"]["bucket"]["name"]
         key = unquote_plus(record["s3"]["object"]["key"])
-        
+
         # Skip folder creation events
         if key.endswith("/"):
             logger.info(f"⏩ Skipping folder: {key}")
             continue
-            
+
         doc_id = os.path.basename(key)
-        
+
         # Skip if no filename
         if not doc_id:
             logger.info(f"⏩ Skipping empty filename: {key}")
@@ -78,16 +80,16 @@ def ade_handler(event: dict, context) -> dict:
 
         # Extract relative path from input folder to preserve folder structure
         relative_path = key[len(INPUT_FOLDER):] if key.startswith(INPUT_FOLDER) else key
-        
+
         # Get the directory structure and filename
         path_parts = Path(relative_path)
         subfolder = str(path_parts.parent) if path_parts.parent != Path('.') else ''
         filename = path_parts.name
-        
+
         # Remove the original extension (e.g., .pdf) and add .md
         # This converts "document.pdf" to "document.md" instead of "document.pdf.md"
         filename_without_ext = Path(filename).stem  # Gets filename without extension
-        
+
         # Build output key preserving folder structure
         if subfolder and subfolder != '.':
             output_key = f"{OUTPUT_FOLDER}{subfolder}/{filename_without_ext}.md"
@@ -133,20 +135,20 @@ def ade_handler(event: dict, context) -> dict:
                 Body=markdown.encode("utf-8"),
                 ContentType="text/markdown"
             )
-            
+
             # Save grounding data (visual references) in separate folder
             # Use path-based approach for consistent folder structure
             path_parts = Path(output_key).parts
-            
+
             if len(path_parts) >= 2:
                 # Extract base folder structure (e.g., 'output/documents' or 'output/financial_reports')
                 base_folder = str(Path(*path_parts[:2]))  # First two parts: output/foldername
                 relative_path = Path(*path_parts[2:]) if len(path_parts) > 2 else Path(path_parts[-1])
-                
+
                 # Create parallel folders with consistent naming
                 grounding_folder = f"{base_folder}_grounding"
                 chunks_folder = f"{base_folder}_chunks/"
-                
+
                 # Build the grounding key path
                 grounding_filename = str(relative_path).replace('.md', '_grounding.json')
                 grounding_key = str(Path(grounding_folder) / grounding_filename)
@@ -182,7 +184,7 @@ def ade_handler(event: dict, context) -> dict:
                         else:
                             chunk_dict = chunk
                         chunks_data.append(chunk_dict)
-                
+
                 splits_data = []
                 if hasattr(response, 'splits'):
                     for split in response.splits:
@@ -196,7 +198,7 @@ def ade_handler(event: dict, context) -> dict:
                         else:
                             split_dict = split
                         splits_data.append(split_dict)
-                
+
                 metadata_data = {}
                 if hasattr(response, 'metadata'):
                     metadata = response.metadata
@@ -212,18 +214,18 @@ def ade_handler(event: dict, context) -> dict:
                         }
                     else:
                         metadata_data = metadata
-                
+
                 grounding_data = {
                     'chunks': chunks_data,
                     'splits': splits_data,
                     'metadata': metadata_data
                 }
-                
+
                 # Only save if we have actual chunk data
                 if grounding_data['chunks']:
                     logger.info(f"📍 Uploading visual grounding data → s3://{bucket}/{grounding_key}")
                     logger.info(f"   Found {len(grounding_data['chunks'])} chunks with grounding info")
-                    
+
                     # Save as clean JSON
                     s3.put_object(
                         Bucket=bucket,
@@ -232,7 +234,7 @@ def ade_handler(event: dict, context) -> dict:
                         ContentType="application/json"
                     )
                     logger.info(f"✅ Saved grounding data: {grounding_key}")
-                    
+
                     # Create individual chunk JSON files for Knowledge Base
                     logger.info(f"📦 Creating individual chunk files for Knowledge Base...")
                     chunk_count = 0
@@ -240,7 +242,7 @@ def ade_handler(event: dict, context) -> dict:
                         chunk_id = chunk.get('id', '')
                         if not chunk_id:
                             continue
-                        
+
                         # Extract bbox from grounding
                         grounding = chunk.get('grounding', {})
                         box = grounding.get('box', {})
@@ -250,7 +252,7 @@ def ade_handler(event: dict, context) -> dict:
                             box.get('right', 1),
                             box.get('bottom', 1)
                         ]
-                        
+
                         # Create chunk JSON for Knowledge Base
                         chunk_json = {
                             "chunk_id": chunk_id,
@@ -260,7 +262,7 @@ def ade_handler(event: dict, context) -> dict:
                             "page": grounding.get('page', 0),
                             "source_document": filename_without_ext
                         }
-                        
+
                         # Save individual chunk JSON
                         chunk_key = f"{chunks_folder}{filename_without_ext}_{chunk_id}.json"
                         s3.put_object(
@@ -270,11 +272,11 @@ def ade_handler(event: dict, context) -> dict:
                             ContentType="application/json"
                         )
                         chunk_count += 1
-                    
+
                     logger.info(f"✅ Created {chunk_count} chunk files in {chunks_folder}")
                 else:
                     logger.info(f"⚠️ No chunks found in response for grounding data")
-                    
+
             except Exception as e:
                 logger.info(f"⚠️ Could not save grounding data: {e}")
 

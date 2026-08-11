@@ -81,7 +81,7 @@ def load_chroma_collection(collection_name: str, chroma_path: str = "./chroma_db
 
 
 # ── 4. Search Tool ────────────────────────────────────────────────────────────
-def build_search_tool(collection, gemini_client, s3_client, bucket: str):
+def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hybrid: bool = False):
     """
     Build the search_knowledge_base function that the Gemini agent will call.
 
@@ -95,11 +95,21 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str):
         Search the document knowledge base.
         Returns text chunks with page numbers and visual reference image URLs.
         """
-        results = search_chroma(
-            query=query,
-            collection=collection,
-            n_results=5,
-        )
+        logger.info(f"   🔍 Querying ChromaDB for: '{query}'")
+
+        if use_hybrid:
+            from hybrid_search import search_chroma_hybrid
+            results = search_chroma_hybrid(
+                query=query,
+                collection=collection,
+                n_results=5,
+            )
+        else:
+            results = search_chroma(
+                query=query,
+                collection=collection,
+                n_results=5,
+            )
 
         if not results:
             return f"No documents found for query: '{query}'."
@@ -127,7 +137,7 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str):
                 possible_keys = [
                     f"input/documents/{source_doc}.pdf"
                 ]
-                
+
                 for source_pdf_key in possible_keys:
                     try:
                         s3_client.head_object(Bucket=bucket, Key=source_pdf_key)

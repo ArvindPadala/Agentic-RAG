@@ -210,7 +210,7 @@ def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file
 
         # Extract visual grounding image URLs from the response text
         image_urls = extract_image_urls(raw_response)
-        
+
         # Build HTML for images
         html_content = ""
         for url in image_urls:
