@@ -96,7 +96,6 @@ Agentic-RAG/
 ├── .github/workflows/ci.yml      # GitHub Actions CI configuration
 ├── Makefile                      # Make targets (lint, test)
 ├── EVALUATION_REPORT.md          # Detailed benchmarking results
-└── project_challenges.md         # Historical debugging and architecture logs
 ```
 
 ---
@@ -130,5 +129,4 @@ python app.py
 python agent.py -q "Explain the revenue growth mentioned in the Q3 report."
 ```
 
-## Challenges & Architecture Decisions
-For a detailed post-mortem on early design challenges—including cross-platform packaging for AWS Lambda C-extensions, API rate limit exhaustion, and Pydantic validation errors—refer to [`project_challenges.md`](./project_challenges.md).
+
