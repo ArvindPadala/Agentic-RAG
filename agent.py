@@ -123,10 +123,9 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str):
             # Visual grounding: crop the PDF region and get a presigned URL
             cropped_image_url = None
             if source_doc and bucket and s3_client:
-                # Try the new 'documents' path first, fallback to old 'medical' path
+                # Try the documents path
                 possible_keys = [
-                    f"input/documents/{source_doc}.pdf",
-                    f"input/medical/{source_doc}.pdf"
+                    f"input/documents/{source_doc}.pdf"
                 ]
                 
                 for source_pdf_key in possible_keys:

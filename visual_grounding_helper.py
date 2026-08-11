@@ -8,6 +8,9 @@ import boto3
 from typing import Dict, List, Optional, Tuple
 import io
 from pathlib import Path
+from utils.logger import get_logger
+
+logger = get_logger("visual_grounding")
 
 # Check if dynamic cropping dependencies are available
 try:

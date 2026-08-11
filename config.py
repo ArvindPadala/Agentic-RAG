@@ -21,7 +21,7 @@ class Config:
         self.AWS_ACCESS_KEY_ID = self._get_optional("AWS_ACCESS_KEY_ID")
         self.AWS_SECRET_ACCESS_KEY = self._get_optional("AWS_SECRET_ACCESS_KEY")
         self.AWS_REGION = self._get_optional("AWS_REGION", "us-east-1")
-        self.S3_BUCKET_NAME = self._get_optional("S3_BUCKET_NAME")
+        self.S3_BUCKET_NAME = self._get_optional("S3_BUCKET")
         
         # ADE Handler Defaults
         self.ADE_MODEL = self._get_optional("ADE_MODEL", "dpt-2-latest")

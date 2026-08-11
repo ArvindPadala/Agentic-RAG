@@ -16,4 +16,4 @@ services:
     env_file:
       - .env
     restart: unless-stopped
-    command: [ "python", "app.py", "--port", "7860", "--collection", "medical_chunks" ]
+    command: [ "python", "app.py", "--port", "7860", "--collection", "document_chunks" ]
