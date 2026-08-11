@@ -1,206 +1,134 @@
 # Agentic RAG System with Visual Grounding
 
-> An end-to-end **agentic RAG** (Retrieval-Augmented Generation) pipeline that processes complex PDFs, indexes semantic chunks into a local vector database, and runs a Gemini-powered chatbot with **visual grounding** — highlighting the exact PDF regions that back every answer.
+> A production-ready **Agentic RAG** (Retrieval-Augmented Generation) pipeline. This system processes complex PDFs via LandingAI ADE, indexes semantic and keyword chunks locally, and orchestrates a resilient Gemini-powered ReAct agent. It features **Hybrid Search (Vector + BM25)**, an automated evaluation suite (Ragas), a robust LLM API router, and **visual grounding** to highlight source evidence in the original PDFs.
 
 ---
 
-## What It Does
+## Architecture Overview
 
-You ask a question about your documents in plain English. The agent:
+This project implements a complete RAG lifecycle, from asynchronous document ingestion to resilient LLM inference.
 
-1. **Calls a search tool** → queries indexed chunks from your documents
-2. **Retrieves top-5 matches** → using cosine similarity over `sentence-transformers` embeddings
-3. **Generates an answer** → Gemini 2.5 Flash reasons over the retrieved content
-4. **Provides visual grounding** → returns a presigned S3 URL pointing to a cropped, highlighted image of the exact PDF region that contains the evidence
-
-```
-You: "What was the Q3 revenue for the enterprise segment?"
-       ↓
-Agent calls: search_knowledge_base(query="Q3 revenue enterprise segment")
-       ↓
-ChromaDB returns: 5 relevant chunks from financial reports
-       ↓
-Gemini synthesizes: Evidence-based answer with citations + page numbers
-       ↓
-Output: Answer + 🔍 Visual Reference: https://s3.aws.../chunk_image.png
-```
-
----
-
-## Architecture
-
-![Architecture](images/architecture_1.png)
-
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                    DOCUMENT PIPELINE (one-time)                 │
-│                                                                 │
+│                    DOCUMENT INGESTION PIPELINE                  │
 │  documents/*.pdf  →  S3 (input/)  →  AWS Lambda                 │
 │                                       ↓                          │
 │                              LandingAI ADE (parsing)            │
 │                                       ↓                          │
 │                         S3 (output/chunks/*.json)               │
 │                                       ↓                          │
-│                    ChromaDB (local) ← sentence-transformers      │
+│    ChromaDB (Vector) ← SentenceTransformers (all-MiniLM-L6-v2)  │
+│    BM25Okapi (Lexical) ← NLTK Tokenization                      │
 └─────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────┐
-│                      AGENT (every query)                        │
-│                                                                 │
-│  User question → Gemini 2.5 Flash (function calling)           │
+│                      INFERENCE & AGENT PIPELINE                 │
+│  User Query → LLM Router (Exponential Backoff, Key Rotation)    │
 │                       ↓                                         │
-│              search_knowledge_base()                            │
+│              ReAct Agent Loop (Tool Use)                        │
 │                       ↓                                         │
-│  ChromaDB query → top-5 chunks → visual grounding (S3 crop)    │
+│  Hybrid Search (Reciprocal Rank Fusion: BM25 + Cosine Sim)     │
 │                       ↓                                         │
-│  Gemini synthesizes → cited answer + visual reference URLs      │
+│  Agent synthesizes → Cited Answer + S3 Pre-signed Visual Crop   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Tech Stack
-
-| Layer | Technology | Role |
-|---|---|---|
-| **Serverless compute** | AWS Lambda (Python 3.12) | Triggers on S3 upload, runs ADE |
-| **Document parsing** | LandingAI ADE | Extracts chunks with bounding boxes from PDFs |
-| **Storage** | AWS S3 | PDFs, chunk JSONs, cropped chunk images |
-| **Vector DB** | ChromaDB (local) | Stores and retrieves semantic embeddings |
-| **Embeddings** | `sentence-transformers/all-MiniLM-L6-v2` | Local, free, no rate limits |
-| **LLM + Agent** | Google Gemini 2.5 Flash | Reasoning, function calling, response generation |
-| **Visual grounding** | PyMuPDF + Pillow | Crops and highlights PDF regions |
-| **Memory** | JSON on disk | Cross-session context persistence |
+### Core Technologies
+- **Compute / Orchestration**: AWS Lambda (Python 3.12, containerized/Manylinux), GitHub Actions (CI)
+- **Document Parsing**: LandingAI ADE (Bounding boxes + Layout extraction)
+- **Retrieval Engine**: ChromaDB (Vector) + Rank_BM25 (Lexical) + RRF (Fusion)
+- **Embeddings**: `sentence-transformers/all-MiniLM-L6-v2` (Local execution)
+- **LLM / Agent**: Google Gemini API via custom resilient `GeminiRouter`
+- **Evaluation**: Ragas, PyTest
 
 ---
 
-## Key Technical Highlights
+## Technical Implementations & Engineering Results
 
-- **Agentic function calling** — Gemini autonomously decides when and how many times to call the search tool before answering; implemented as a `while True` agent loop without any framework
-- **Visual grounding** — every answer includes presigned S3 URLs to cropped, highlighted images of the exact PDF regions the evidence came from
-- **Cross-platform Lambda packaging** — uses `--platform manylinux2014_x86_64 --python-version 312` pip flags to correctly build Linux-compatible C-extension wheels (e.g., `pydantic_core`) on macOS
-- **Local embeddings** — switched from Gemini Embedding API (rate-limited) to ChromaDB's built-in `sentence-transformers` for unlimited local inference
-- **Portable CLI** — `agent.py` runs the full agent from the terminal with `--question`, `--collection`, and `--model` flags; no Jupyter required
+### 1. Hybrid Search (Vector + Lexical)
+Standard cosine similarity struggles with exact keyword matching (e.g., acronyms, IDs). We implemented a Hybrid Search module (`hybrid_search.py`) that executes parallel queries against ChromaDB (Dense) and BM25Okapi (Sparse), merging results via **Reciprocal Rank Fusion (RRF)**.
 
----
+**Evaluation Results (Measured via automated testset generation):**
+- **MRR@5**: Improved from 0.7949 (Vector) to **0.8846** (Hybrid) — a **+11.2%** increase.
+- **Recall@1**: Improved from 0.7692 to **0.8462** (The exact context is retrieved on the first try ~85% of the time).
 
-## Getting Started
+### 2. Resilient LLM Routing (`llm_router.py`)
+To achieve production reliability on rate-limited LLM tiers (e.g., Gemini Free Tier), we implemented a custom client router utilizing `tenacity`.
+- **Key Rotation**: Automatically hot-swaps between API keys (e.g., `GEMINI_API_KEY`, `GEMINI_API_KEY_2`) upon encountering `429 Quota Exceeded` errors.
+- **Model Fallback**: Gracefully degrades down a predefined chain (`gemini-3.6-flash` → `3.5-flash` → `3.5-flash-lite`) if all keys are exhausted.
+- **Exponential Backoff**: Jittered retry loops to survive transient `503` service unavailability.
 
-### Prerequisites
+### 3. Automated Evaluation Pipeline (`eval/`)
+Rather than relying on qualitative spot-checks, the system includes a quantitative evaluation pipeline:
+- `generate_testset.py`: Uses the LLM to autonomously generate a "Golden Dataset" of challenging queries based directly on the ingested ChromaDB chunks.
+- `calculate_retrieval_metrics.py`: Computes Precision@K, Recall@K, and MRR.
+- `evaluate_ragas.py`: Implements the `ragas` framework to mathematically score generation **Faithfulness** (hallucination checks) and **Answer Relevancy**.
 
-- Python 3.12
-- AWS account (free tier sufficient) with S3, Lambda, IAM, CloudWatch access
-- [Google AI Studio](https://aistudio.google.com/) API key (free)
-- [LandingAI](https://va.landing.ai/) Vision Agent API key (free tier)
-
-### 1. Clone and install
-
-```bash
-git clone https://github.com/ArvindPadala/Agentic-RAG.git
-cd Agentic-RAG
-pip install -r requirements.txt
-```
-
-### 2. Configure environment
-
-```bash
-cp .env.example .env
-# Fill in your keys:
-```
-
-```env
-GEMINI_API_KEY=your_gemini_api_key
-AWS_ACCESS_KEY_ID=your_aws_access_key
-AWS_SECRET_ACCESS_KEY=your_aws_secret_key
-AWS_REGION=us-east-2
-S3_BUCKET=your-s3-bucket-name
-VISION_AGENT_API_KEY=your_landingai_api_key
-```
-
-### 3. Run the document pipeline (one-time setup)
-
-Open `pipeline_setup.ipynb` and run Steps 1–9. This:
-- Deploys the Lambda function (Steps 3–5)
-- Uploads PDFs to S3 and triggers document parsing (Steps 7)
-- Indexes 759 chunks into ChromaDB with local embeddings (Steps 8–9)
-
-> ⏩ **Skip Steps 3–9** if someone already ran them — `chroma_db/` is ready on disk.
-
-### 4. Run the agent
-
-```bash
-# Interactive chat
-python agent.py
-
-# Single question
-python agent.py -q "What are the symptoms of the common cold?"
-
-# Use a different document collection
-python agent.py --collection flu_chunks
-
-# All options
-python agent.py --help
-```
+### 4. CI/CD Pipeline
+The repository enforces code quality and functionality via GitHub Actions (`.github/workflows/ci.yml`):
+- Executes `flake8` for strict PEP8 compliance and syntax validation.
+- Runs the complete `pytest` suite covering unit, integration, and end-to-end agent workflows on every push to `main`.
 
 ---
 
 ## Project Structure
 
-```
+```text
 Agentic-RAG/
-├── agent.py                    # Standalone CLI agent (no Jupyter required)
-├── app.py                      # Gradio web UI with visual grounding panel
-├── pipeline_setup.ipynb        # Step-by-step notebook (setup + exploration)
-├── gemini_helpers.py           # ChromaDB init, search, memory, embedding utils
-├── lambda_helpers.py           # Lambda deployment, S3 triggers, IAM role setup
-├── visual_grounding_helper.py  # PDF cropping and S3 image upload for grounding
-├── ade_s3_handler.py           # Lambda function: S3 trigger → LandingAI ADE → chunks
-├── documents/                  # Example PDFs for the knowledge base
-├── project_challenges.md       # Debugging log: issues faced and how they were resolved
-└── .env.example                # Environment variable template
+├── agent.py                      # Standalone CLI agent entry point
+├── app.py                        # Gradio Web UI (Chat + Visual Grounding)
+├── llm_router.py                 # Resilient GenAI Client (Rotation, Fallback)
+├── hybrid_search.py              # BM25 + Vector Search + Reciprocal Rank Fusion
+├── gemini_helpers.py             # ChromaDB abstractions, tool definitions
+├── lambda_helpers.py             # AWS Infrastructure automation (S3, IAM, Lambda)
+├── visual_grounding_helper.py    # PyMuPDF rendering and S3 upload logic
+├── ade_s3_handler.py             # Lambda handler for LandingAI ADE parsing
+├── eval/                         # Evaluation Pipeline
+│   ├── generate_testset.py       # Golden Dataset generator
+│   ├── calculate_retrieval_metrics.py
+│   ├── evaluate_baseline.py      # Runs testset using Vector only
+│   ├── evaluate_hybrid.py        # Runs testset using Hybrid Search
+│   └── evaluate_ragas.py         # Ragas generation metric scoring
+├── tests/                        # Pytest Suite
+│   ├── test_unit.py
+│   ├── test_integration.py
+│   └── test_e2e.py
+├── .github/workflows/ci.yml      # GitHub Actions CI configuration
+├── Makefile                      # Make targets (lint, test)
+├── EVALUATION_REPORT.md          # Detailed benchmarking results
+└── project_challenges.md         # Historical debugging and architecture logs
 ```
 
 ---
 
-## Demo
+## Local Deployment & Usage
 
-![Gradio Web UI Demo](images/gradio_ui.png)
+### Prerequisites
+- Python 3.12
+- AWS Account (S3, Lambda, IAM)
+- Google GenAI API Key (Supports multiple via `GEMINI_API_KEY_2`)
+- LandingAI Vision Agent API Key
 
----
-
-## Sample Output
-
-```
-You: "What was the year-over-year revenue growth for the enterprise segment?"
-
-   🔧 search_knowledge_base(query='enterprise segment year over year revenue growth')
-
-Agent: Based on the Q3 earnings report, the enterprise segment saw significant growth:
-
-- **Revenue growth**: The enterprise segment grew by 24% year-over-year, driven by strong cloud adoption.
-  (Q3_Financial_Results, Page 4)
-  🔍 Visual Reference: https://...s3.amazonaws.com/...chunk_image.png
-
-- **Operating margin**: The operating margin for this segment also improved by 300 basis points.
-  (Q3_Financial_Results, Page 7)
-  🔍 Visual Reference: https://...s3.amazonaws.com/...chunk_image.png
+### Setup
+```bash
+git clone https://github.com/ArvindPadala/Agentic-RAG.git
+cd Agentic-RAG
+python -m pip install -r requirements.txt
+cp .env.example .env
 ```
 
----
+### Running the System
+```bash
+# Run tests and linter
+make lint
+make test
 
-## Challenges & Debugging
+# Launch the Gradio Web Application
+python app.py
 
-See [`project_challenges.md`](./project_challenges.md) for a detailed log of every major issue encountered, how it was diagnosed, and how it was resolved — including:
+# Launch the CLI Agent (Headless)
+python agent.py -q "Explain the revenue growth mentioned in the Q3 report."
+```
 
-- Lambda `pydantic_core` platform mismatch (macOS wheels on Linux Lambda)
-- Gemini Embedding API rate limits → switched to local `sentence-transformers`
-- Pydantic v2 union validation errors in the Gemini SDK's `generate_content`
-- VS Code notebook caching overwriting programmatic file edits
-
----
-
-## What I Learned
-
-- **RAG architecture** from scratch — chunking, embedding, indexing, retrieval, synthesis
-- **Agentic function calling** — implementing the agent loop manually without a framework (LangChain, LlamaIndex, etc.)
-- **Cross-platform AWS Lambda packaging** — pip platform flags for binary wheels
-- **Visual grounding** — connecting bounding box metadata from document parsing to rendered PDF crops
-- **Debugging production AI systems** — isolating failures across cloud, SDK, and local layers
+## Challenges & Architecture Decisions
+For a detailed post-mortem on early design challenges—including cross-platform packaging for AWS Lambda C-extensions, API rate limit exhaustion, and Pydantic validation errors—refer to [`project_challenges.md`](./project_challenges.md).
