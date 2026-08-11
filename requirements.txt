@@ -5,8 +5,10 @@ Pillow>=10.0
 PyMuPDF>=1.23
 requests>=2.31
 
-# Gemini SDK
+# Gemini SDK & Routing
 google-genai>=1.0
+tenacity>=8.0
+langsmith>=0.1.0
 
 # Vector DB + Local Embeddings
 chromadb>=0.5
