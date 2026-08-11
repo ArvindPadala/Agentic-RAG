@@ -18,6 +18,7 @@ import argparse
 import gradio as gr
 from config import settings
 from utils.logger import get_logger
+from upload_handler import make_upload_fn
 
 logger = get_logger("app")
 
@@ -128,11 +129,9 @@ def format_memory_status(memory: dict) -> str:
 # ── Available Gemini models ──────────────────────────────────────────────────
 # Listed in order of capability. Free-tier daily limits shown for reference.
 AVAILABLE_MODELS = [
-    ("Gemini 2.5 Flash  (1,500 req/day)",  "models/gemini-2.5-flash"),
-    ("Gemini 2.0 Flash  (1,500 req/day)",  "models/gemini-2.0-flash"),
-    ("Gemini 2.0 Flash-Lite  (1,500 req/day)", "models/gemini-2.0-flash-lite"),
-    ("Gemini 1.5 Flash  (1,500 req/day)",  "models/gemini-1.5-flash"),
-    ("Gemini 1.5 Flash-8B  (high quota)",  "models/gemini-1.5-flash-8b"),
+    ("Gemini 3.5 Flash  (Recommended)",  "models/gemini-3.5-flash"),
+    ("Gemini 3.5 Flash-Lite  (Recommended)", "models/gemini-3.5-flash-lite"),
+    ("Gemini Flash Latest  (Latest Free)",  "models/gemini-flash-latest"),
 ]
 MODEL_LABELS   = [label for label, _ in AVAILABLE_MODELS]
 MODEL_IDS      = {label: mid for label, mid in AVAILABLE_MODELS}
@@ -170,7 +169,7 @@ def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file
             return history, conversation_history, [], format_memory_status(memory)
 
         # Resolve the selected model ID
-        model_id = MODEL_IDS.get(model_label, "models/gemini-2.5-flash")
+        model_id = MODEL_IDS.get(model_label, "models/gemini-3.5-flash")
 
         # Append user message in Gradio 6.x messages format
         history = history + [{"role": "user", "content": user_message}]
@@ -207,10 +206,17 @@ def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file
             # doesn't see a failed partial turn on the next attempt
             if conversation_history:
                 conversation_history.pop()
-            return history, conversation_history, [], format_memory_status(memory)
+            return history, conversation_history, "<div style='text-align:center; color:#888; padding:20px;'>Error occurred.</div>", format_memory_status(memory)
 
         # Extract visual grounding image URLs from the response text
         image_urls = extract_image_urls(raw_response)
+        
+        # Build HTML for images
+        html_content = ""
+        for url in image_urls:
+            html_content += f'<div style="margin-bottom:15px;"><img src="{url}" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
+        if not html_content:
+            html_content = "<div style='text-align:center; color:#888; padding:20px;'>No visual grounding for this response.</div>"
 
         # Clean raw URLs from the visible response text
         display_response = clean_response(raw_response)
@@ -218,7 +224,7 @@ def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file
         # Append assistant message in Gradio 6.x messages format
         history = history + [{"role": "assistant", "content": display_response}]
 
-        return history, conversation_history, image_urls, format_memory_status(memory)
+        return history, conversation_history, html_content, format_memory_status(memory)
 
     return chat
 
@@ -237,9 +243,10 @@ def make_save_fn(gemini_client, memory, memory_file):
 
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
 
-def build_ui(gemini_client, generation_config, tool_map, memory, memory_file):
+def build_ui(gemini_client, generation_config, tool_map, memory, memory_file, s3_client, collection, bucket_name):
     chat_fn = make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file)
     save_fn = make_save_fn(gemini_client, memory, memory_file)
+    upload_fn = make_upload_fn(s3_client, bucket_name, collection)
 
     with gr.Blocks(title="Document RAG Agent") as demo:
 
@@ -265,60 +272,75 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file):
                     info="Switch models if you hit a daily limit",
                 )
 
-        # ── Main layout: chat (left) + visuals (right) ─────────────────────
-        with gr.Row():
+        # ── Main layout ────────────────────────────────────────────────
+        with gr.Tabs():
+            # ── TAB 1: Chat ────────────────────────────────────────────────
+            with gr.Tab("💬 Chat"):
+                with gr.Row():
+                    # ── LEFT: Chat ────────────────────────────────────────────────
+                    with gr.Column(scale=3, elem_classes="chat-col"):
+                        chatbot = gr.Chatbot(
+                            label="Conversation",
+                            height=480,
+                            render_markdown=True,
+                            avatar_images=(None, "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg"),
+                        )
 
-            # ── LEFT: Chat ────────────────────────────────────────────────
-            with gr.Column(scale=3, elem_classes="chat-col"):
-                chatbot = gr.Chatbot(
-                    label="Conversation",
-                    height=480,
-                    render_markdown=True,
-                    avatar_images=(None, "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg"),
+                        with gr.Row():
+                            user_input = gr.Textbox(
+                                placeholder="Ask about your documents… (e.g. 'What was the Q3 revenue?')",
+                                show_label=False,
+                                lines=2,
+                                scale=5,
+                            )
+                            send_btn = gr.Button("Send →", variant="primary", scale=1, elem_id="send-btn")
+
+                        with gr.Row():
+                            clear_btn  = gr.Button("🗑️ Clear Chat", size="sm")
+                            save_btn   = gr.Button("💾 Save Memory", size="sm", variant="secondary")
+                            save_status = gr.Textbox(show_label=False, interactive=False,
+                                                     placeholder="", scale=2, lines=1)
+
+                    # ── RIGHT: Visual Grounding ────────────────────────────────────
+                    with gr.Column(scale=2, elem_classes="image-col"):
+                        gr.Markdown("### 🔍 Visual Grounding\n*Highlighted PDF regions from last answer*")
+                        image_gallery = gr.HTML(
+                            value="<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>",
+                            elem_id="visual-grounding-html"
+                        )
+
+                # ── Bottom: Memory status ──────────────────────────────────────────
+                with gr.Accordion("🧠 Agent Memory", open=False):
+                    memory_display = gr.Markdown(format_memory_status(memory))
+
+                # ── Example questions ──────────────────────────────────────────────
+                gr.Examples(
+                    examples=[
+                        ["What were the key takeaways from the Q3 earnings report?"],
+                        ["What is the company's year-over-year revenue growth?"],
+                        ["Summarize the risk factors mentioned in the document."],
+                        ["Who are the main competitors listed?"],
+                        ["What does the chart on page 4 indicate about operating margins?"],
+                    ],
+                    inputs=user_input,
+                    label="Try these questions:",
                 )
 
+            # ── TAB 2: Manage Knowledge Base ──────────────────────────────────────────────
+            with gr.Tab("📄 Manage Knowledge Base"):
+                gr.Markdown("### Upload New Documents\nUpload PDFs to automatically chunk, embed, and index them into ChromaDB.")
                 with gr.Row():
-                    user_input = gr.Textbox(
-                        placeholder="Ask about your documents… (e.g. 'What was the Q3 revenue?')",
-                        show_label=False,
-                        lines=2,
-                        scale=5,
-                    )
-                    send_btn = gr.Button("Send →", variant="primary", scale=1, elem_id="send-btn")
+                    with gr.Column(scale=2):
+                        upload_files = gr.File(label="Upload PDFs", file_count="multiple", file_types=[".pdf"])
+                        upload_btn = gr.Button("Upload & Index Documents", variant="primary")
+                    with gr.Column(scale=3):
+                        upload_status = gr.Textbox(label="Status", lines=15, interactive=False)
 
-                with gr.Row():
-                    clear_btn  = gr.Button("🗑️ Clear Chat", size="sm")
-                    save_btn   = gr.Button("💾 Save Memory", size="sm", variant="secondary")
-                    save_status = gr.Textbox(show_label=False, interactive=False,
-                                             placeholder="", scale=2, lines=1)
-
-            # ── RIGHT: Visual Grounding ────────────────────────────────────
-            with gr.Column(scale=2, elem_classes="image-col"):
-                gr.Markdown("### 🔍 Visual Grounding\n*Highlighted PDF regions from last answer*")
-                image_gallery = gr.Gallery(
-                    label="Source Evidence",
-                    columns=1,
-                    height=480,
-                    show_label=False,
-                    object_fit="contain",
+                upload_btn.click(
+                    fn=upload_fn,
+                    inputs=[upload_files],
+                    outputs=[upload_status],
                 )
-
-        # ── Bottom: Memory status ──────────────────────────────────────────
-        with gr.Accordion("🧠 Agent Memory", open=False):
-            memory_display = gr.Markdown(format_memory_status(memory))
-
-        # ── Example questions ──────────────────────────────────────────────
-        gr.Examples(
-            examples=[
-                ["What were the key takeaways from the Q3 earnings report?"],
-                ["What is the company's year-over-year revenue growth?"],
-                ["Summarize the risk factors mentioned in the document."],
-                ["Who are the main competitors listed?"],
-                ["What does the chart on page 4 indicate about operating margins?"],
-            ],
-            inputs=user_input,
-            label="Try these questions:",
-        )
 
         # ── Event wiring ───────────────────────────────────────────────────
 
@@ -354,7 +376,7 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file):
 
         # Clear chat (keeps memory, resets conversation)
         clear_btn.click(
-            fn=lambda: ([], [], [], format_memory_status(memory)),
+            fn=lambda: ([], [], "<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>", format_memory_status(memory)),
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         )
 
@@ -377,7 +399,7 @@ def main():
     parser.add_argument("--collection",  default="document_chunks", help="ChromaDB collection")
     parser.add_argument("--chroma-path", default="./chroma_db",    help="ChromaDB folder")
     parser.add_argument("--memory-file", default="memory.json",    help="Memory JSON file")
-    parser.add_argument("--model",       default="models/gemini-2.5-flash", help="Gemini model")
+    parser.add_argument("--model",       default="models/gemini-3.5-flash", help="Gemini model")
     args = parser.parse_args()
 
     logger.info("\n🚀 Starting Document RAG Agent UI...")
@@ -396,7 +418,16 @@ def main():
     if args.share:
         logger.info("🌐 Share link will be printed below (valid 72 hours)")
 
-    demo = build_ui(gemini_client, generation_config, tool_map, memory, args.memory_file)
+    demo = build_ui(
+        gemini_client=gemini_client,
+        generation_config=generation_config,
+        tool_map=tool_map,
+        memory=memory,
+        memory_file=args.memory_file,
+        s3_client=s3_client,
+        collection=collection,
+        bucket_name=settings.S3_BUCKET_NAME
+    )
     demo.launch(
         server_name="0.0.0.0",
         server_port=args.port,

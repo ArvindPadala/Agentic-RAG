@@ -145,7 +145,7 @@ def create_deployment_package(
     # Copy source files
     for source_file in source_files:
         logger.info(f"   Adding source: {source_file}")
-        subprocess.run(f"cp {source_file} {package_dir}/", shell=True)
+        subprocess.run(f"cp -r {source_file} {package_dir}/", shell=True)
     
     # Create zip
     logger.info(f"   Creating zip archive...")

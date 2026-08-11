@@ -264,6 +264,10 @@ def search_chroma(
     Returns:
         List of result dicts with: text, score, chunk_id, metadata fields
     """
+    # If the collection is empty, return early to avoid querying with n_results=0
+    if collection.count() == 0:
+        return []
+
     # ChromaDB auto-embeds the query using sentence-transformers locally.
     # No API call, no rate limit — same model used to embed the documents.
     results = collection.query(
@@ -446,7 +450,7 @@ Conversation:
 
     try:
         response = gemini_client.models.generate_content(
-            model="models/gemini-2.5-flash",
+            model="models/gemini-3.5-flash",
             contents=extraction_prompt
         )
         raw = response.text.strip()
