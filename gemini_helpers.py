@@ -13,19 +13,17 @@ Key concepts covered here:
 """
 
 
-from config import settings
-from utils.logger import get_logger
-
-logger = get_logger('gemini_helpers')
 import json
-import boto3
 import chromadb
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict
 
 # Google Generative AI SDK
 from google import genai
-from google.genai import types
+
+from utils.logger import get_logger
+
+logger = get_logger('gemini_helpers')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

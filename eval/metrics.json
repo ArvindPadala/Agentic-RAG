@@ -1,0 +1,14 @@
+{
+    "baseline": {
+        "mrr_5": 0.9,
+        "recall_1": 0.8,
+        "recall_3": 1.0,
+        "recall_5": 1.0
+    },
+    "hybrid": {
+        "mrr_5": 0.9,
+        "recall_1": 0.8,
+        "recall_3": 1.0,
+        "recall_5": 1.0
+    }
+}

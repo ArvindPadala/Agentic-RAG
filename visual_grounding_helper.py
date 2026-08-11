@@ -3,9 +3,7 @@ Visual Grounding Helper Functions
 Utilities for creating annotated images with bounding boxes from document chunks
 """
 
-import json
-import boto3
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import io
 from pathlib import Path
 from utils.logger import get_logger
@@ -15,7 +13,7 @@ logger = get_logger("visual_grounding")
 # Check if dynamic cropping dependencies are available
 try:
     import fitz  # PyMuPDF for PDF rendering
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
     DYNAMIC_CROPPING_ENABLED = True
 except ImportError:
     DYNAMIC_CROPPING_ENABLED = False
@@ -42,7 +40,7 @@ def render_pdf_page(pdf_bytes: bytes, page_num: int, dpi: int = 150):
     """
     if not DYNAMIC_CROPPING_ENABLED:
         return None, None, None
-    
+
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc[page_num]
@@ -88,7 +86,7 @@ def extract_chunk_image(
     if not DYNAMIC_CROPPING_ENABLED:
         logger.info("⚠️ Dynamic cropping disabled. Install PyMuPDF and Pillow.")
         return None
-    
+
     try:
         # Check if chunk image already exists
         image_key = f"output/chunk_images/{source_document}_{chunk_id}.png"
@@ -103,17 +101,17 @@ def extract_chunk_image(
             return presigned_url
         except Exception:
             pass  # Image doesn't exist, create it
-        
+
         # Download PDF from S3
         response = s3_client.get_object(Bucket=bucket, Key=source_pdf_key)
         pdf_bytes = response['Body'].read()
-        
+
         # Render the PDF page
         img, page_width, page_height = render_pdf_page(pdf_bytes, page_num)
-        
+
         if img is None:
             return None
-        
+
         # If no bbox or invalid bbox, return full page
         if not bbox or len(bbox) != 4:
             img_bytes = io.BytesIO()
@@ -123,26 +121,26 @@ def extract_chunk_image(
         else:
             # Extract normalized bbox coordinates (0-1 range)
             norm_x0, norm_y0, norm_x1, norm_y1 = bbox
-            
+
             # Convert normalized coordinates to PDF points
             pdf_x0 = norm_x0 * page_width
             pdf_y0 = norm_y0 * page_height
             pdf_x1 = norm_x1 * page_width
             pdf_y1 = norm_y1 * page_height
-            
+
             # Scale PDF points to image pixels
             scale_x = img.width / page_width
             scale_y = img.height / page_height
-            
+
             # Apply scaling and padding
             crop_x0 = max(0, int(pdf_x0 * scale_x) - padding)
             crop_y0 = max(0, int(pdf_y0 * scale_y) - padding)
             crop_x1 = min(img.width, int(pdf_x1 * scale_x) + padding)
             crop_y1 = min(img.height, int(pdf_y1 * scale_y) + padding)
-            
+
             # Crop to chunk region
             chunk_img = img.crop((crop_x0, crop_y0, crop_x1, crop_y1))
-            
+
             # Add red border highlight
             if highlight:
                 draw = ImageDraw.Draw(chunk_img)
@@ -151,13 +149,13 @@ def extract_chunk_image(
                     outline="red",
                     width=3
                 )
-            
+
             # Convert to PNG bytes
             img_bytes = io.BytesIO()
             chunk_img.save(img_bytes, format='PNG')
             img_bytes.seek(0)
             image_data = img_bytes.getvalue()
-        
+
         # Upload to S3
         s3_client.put_object(
             Bucket=bucket,
@@ -165,16 +163,16 @@ def extract_chunk_image(
             Body=image_data,
             ContentType='image/png'
         )
-        
+
         # Generate presigned URL
         presigned_url = s3_client.generate_presigned_url(
             'get_object',
             Params={'Bucket': bucket, 'Key': image_key},
             ExpiresIn=3600
         )
-        
+
         return presigned_url
-        
+
     except Exception as e:
         logger.info(f"Error extracting chunk image: {e}")
         return None
@@ -209,26 +207,26 @@ def create_annotated_image_from_pdf(
     try:
         # Open PDF with PyMuPDF
         pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
-        
+
         # Get the specific page (0-indexed in PyMuPDF)
         page = pdf_document[page_num - 1] if page_num > 0 else pdf_document[page_num]
-        
+
         # Render page to image at specified DPI
         mat = fitz.Matrix(dpi/72.0, dpi/72.0)
         pix = page.get_pixmap(matrix=mat)
         img_data = pix.tobytes("png")
-        
+
         # Open image with PIL
         img = Image.open(io.BytesIO(img_data))
         draw = ImageDraw.Draw(img)
-        
+
         # Get image dimensions
         img_width, img_height = img.size
-        
+
         # Define colors based on chunk type (matching ADE chunk types)
         CHUNK_TYPE_COLORS = {
             "text": (40, 167, 69),           # Green
-            "table": (0, 123, 255),          # Blue  
+            "table": (0, 123, 255),          # Blue
             "marginalia": (111, 66, 193),    # Purple
             "figure": (255, 0, 255),         # Magenta
             "logo": (144, 238, 144),         # Light green
@@ -241,7 +239,7 @@ def create_annotated_image_from_pdf(
         }
         # Get RGB color based on chunk type
         rgb_color = CHUNK_TYPE_COLORS.get(chunk_type.lower(), CHUNK_TYPE_COLORS["default"])
-        
+
         # Draw bounding boxes
         for bbox in bounding_boxes:
             if bbox and 'left' in bbox:
@@ -251,44 +249,44 @@ def create_annotated_image_from_pdf(
                 top = float(bbox.get('top', 0))
                 right = float(bbox.get('right', 1))
                 bottom = float(bbox.get('bottom', 1))
-                
+
                 # Ensure coordinates are in 0-1 range
                 left = max(0, min(1, left))
                 top = max(0, min(1, top))
                 right = max(0, min(1, right))
                 bottom = max(0, min(1, bottom))
-                
+
                 # Convert to pixel coordinates
                 x1 = int(left * img_width)
                 y1 = int(top * img_height)
                 x2 = int(right * img_width)
                 y2 = int(bottom * img_height)
-                
+
                 # Draw rectangle with thick outline for visibility
                 draw.rectangle(
                     [x1, y1, x2, y2],
                     outline=rgb_color,
                     width=3
                 )
-                
+
                 # Add semi-transparent overlay for better visibility
                 overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
                 overlay_draw = ImageDraw.Draw(overlay)
-                
+
                 # Create semi-transparent version of the RGB color
                 fill_color = rgb_color + (30,)  # Add alpha channel for transparency
-                
+
                 overlay_draw.rectangle(
                     [x1, y1, x2, y2],
                     fill=fill_color
                 )
                 img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
-        
+
         # Save to bytes
         img_bytes = io.BytesIO()
         img.save(img_bytes, format='PNG')
         img_bytes.seek(0)
-        
+
         # Upload to S3
         s3_client.put_object(
             Bucket=bucket,
@@ -296,18 +294,18 @@ def create_annotated_image_from_pdf(
             Body=img_bytes.getvalue(),
             ContentType='image/png'
         )
-        
+
         pdf_document.close()
-        
+
         # Generate presigned URL for the image
         presigned_url = s3_client.generate_presigned_url(
             'get_object',
             Params={'Bucket': bucket, 'Key': output_s3_key},
             ExpiresIn=3600  # URL valid for 1 hour
         )
-        
+
         return presigned_url
-        
+
     except Exception as e:
         logger.info(f"Error creating annotated image: {e}")
         return None
@@ -340,7 +338,7 @@ def get_or_create_annotated_image(
     page_num = grounding_info.get('page', 1)
     clean_chunk_id = chunk_id.replace('<a id=', '').replace('></a>', '').strip('"')
     annotation_key = f"annotations/{Path(source_pdf_key).stem}_p{page_num}_{clean_chunk_id}.png"
-    
+
     # Check if annotation already exists
     if not force_recreate:
         try:
@@ -354,12 +352,12 @@ def get_or_create_annotated_image(
             return presigned_url
         except Exception:
             pass  # File doesn't exist, create it
-    
+
     # Download source PDF
     try:
         response = s3_client.get_object(Bucket=bucket, Key=source_pdf_key)
         pdf_bytes = response['Body'].read()
-        
+
         # Create annotated image
         bbox = grounding_info.get('box', {})
         url = create_annotated_image_from_pdf(
@@ -371,9 +369,9 @@ def get_or_create_annotated_image(
             bucket=bucket,
             chunk_type=chunk_type
         )
-        
+
         return url
-        
+
     except Exception as e:
         logger.info(f"Error processing annotation: {e}")
         return None
@@ -390,14 +388,14 @@ def extract_chunk_id_from_markdown(markdown_text: str) -> Optional[str]:
         Chunk ID or None if not found
     """
     import re
-    
+
     # Look for anchor tags with IDs
     pattern = r'<a id=["\'](.*?)["\']></a>'
     match = re.search(pattern, markdown_text)
-    
+
     if match:
         return match.group(1)
-    
+
     return None
 
 
