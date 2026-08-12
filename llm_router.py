@@ -73,30 +73,28 @@ class GeminiRouter:
         retry=retry_if_exception_type(APIError),
         reraise=True
     )
-    @traceable(run_type="llm")
     def generate_content(self, contents: Any, config: Any = None, **kwargs):
         """
         Wraps genai.models.generate_content with routing and backoff logic.
         """
-        # If 'model' is passed in kwargs, override our fallback model logic
-        # But our app usually passes model inside kwargs! Wait, `run_agent_turn` passes `model=model` directly.
-        # We should pop 'model' from kwargs because we handle model selection!
         if 'model' in kwargs:
             kwargs.pop('model')
             
         client = self.clients[self.current_key_idx]
         model_name = self.fallback_models[self.current_model_idx]
         
-        try:
+        @traceable(run_type="chain", name="gemini_generate_content")
+        def _execute(c, cfg, kw):
             logger.debug(f"Attempting generation with Key #{self.current_key_idx + 1} on model {model_name}")
-            
-            response = client.models.generate_content(
+            return client.models.generate_content(
                 model=model_name,
-                contents=contents,
-                config=config,
-                **kwargs
+                contents=c,
+                config=cfg,
+                **kw
             )
-            return response
+            
+        try:
+            return _execute(contents, config, kwargs)
             
         except APIError as e:
             if hasattr(e, 'code') and e.code in [404, 429, 503]:
