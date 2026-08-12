@@ -4,24 +4,22 @@ import pandas as pd
 from datasets import Dataset
 from ragas import evaluate
 from ragas.metrics import faithfulness, answer_relevancy
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.chat_models import ChatOllama
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from ragas.run_config import RunConfig
 import ast
 import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from config import settings
 
-# Setup Langchain Google GenAI with high retries to survive 429s
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash",
-    google_api_key=settings.GEMINI_API_KEY,
-    max_retries=20,
-    timeout=120
+# Setup local Llama 3.1 8B for judge evaluation
+llm = ChatOllama(
+    model="llama3.1:8b",
+    temperature=0,
 )
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001",
-    google_api_key=settings.GEMINI_API_KEY
+embeddings = HuggingFaceEmbeddings(
+    model_name="all-MiniLM-L6-v2"
 )
 
 def prepare_dataset(csv_path):
@@ -55,12 +53,15 @@ def main():
     metrics = [faithfulness, answer_relevancy]
 
     print("\n--- Evaluating Baseline Vector Search ---")
+    # Smoke test: 1 worker to ensure it doesn't time out
+    run_config = RunConfig(max_workers=1, timeout=180)
     baseline_result = evaluate(
         baseline_ds,
         metrics=metrics,
         llm=llm,
         embeddings=embeddings,
         raise_exceptions=False,
+        run_config=run_config,
     )
     print("Baseline RAGAS Metrics:")
     print(baseline_result)
@@ -75,6 +76,7 @@ def main():
         llm=llm,
         embeddings=embeddings,
         raise_exceptions=False,
+        run_config=run_config,
     )
     print("Hybrid RAGAS Metrics:")
     print(hybrid_result)
