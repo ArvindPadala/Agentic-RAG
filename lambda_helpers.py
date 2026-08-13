@@ -53,9 +53,29 @@ def create_or_update_lambda_role(
             RoleName=role_name,
             PolicyArn="arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
         )
-        iam_client.attach_role_policy(
+        # Scope S3 access to the specific bucket
+        s3_policy = {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Effect": "Allow",
+                    "Action": [
+                        "s3:GetObject",
+                        "s3:PutObject",
+                        "s3:ListBucket"
+                    ],
+                    "Resource": [
+                        f"arn:aws:s3:::{settings.S3_BUCKET_NAME}",
+                        f"arn:aws:s3:::{settings.S3_BUCKET_NAME}/*"
+                    ]
+                }
+            ]
+        }
+        
+        iam_client.put_role_policy(
             RoleName=role_name,
-            PolicyArn="arn:aws:iam::aws:policy/AmazonS3FullAccess"
+            PolicyName="ScopedS3Access",
+            PolicyDocument=json.dumps(s3_policy)
         )
 
         # Wait for role to propagate

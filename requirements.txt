@@ -20,3 +20,4 @@ gradio>=6.0
 # LandingAI ADE (Lambda only — not needed for running the agent locally)
 # landingai-ade
 # typing-extensions>=4.7
+rank_bm25>=0.2.2

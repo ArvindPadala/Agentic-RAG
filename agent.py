@@ -244,6 +244,7 @@ def run_agent_turn(
     generation_config,
     tool_map: dict,
     model: str = "models/gemini-3.6-flash",
+    max_iterations: int = 5,
 ) -> str:
     """
     Process one user message through the full agent loop.
@@ -261,7 +262,7 @@ def run_agent_turn(
         genai_types.Content(role="user", parts=[genai_types.Part(text=user_message)])
     )
 
-    while True:
+    for iteration in range(max_iterations):
         response = gemini_client.models.generate_content(
             model=model,
             contents=conversation_history,
@@ -315,6 +316,13 @@ def run_agent_turn(
                 genai_types.Content(role="model", parts=[genai_types.Part(text=final_text)])
             )
             return final_text
+            
+    # If the loop exhausts max_iterations without a final text response
+    fallback_text = "I'm sorry, I was unable to find a complete answer within the allowed number of searches."
+    conversation_history.append(
+        genai_types.Content(role="model", parts=[genai_types.Part(text=fallback_text)])
+    )
+    return fallback_text
 
 
 # ── 7. Chat Loop ──────────────────────────────────────────────────────────────
@@ -324,7 +332,6 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
     conversation_history = []  # Fresh history every session
     conversation_num = 0
 
-    logger.info()
     logger.info("=" * 70)
     logger.info("  Document Agent — Interactive Chat with Visual Grounding (Gemini)")
     logger.info("=" * 70)

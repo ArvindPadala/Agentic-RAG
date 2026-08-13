@@ -155,7 +155,7 @@ def is_overload_error(e: Exception) -> bool:
 
 # ── Core chat function ────────────────────────────────────────────────────────
 
-def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file):
+def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, bucket_name):
     """
     Returns the Gradio chat handler.
 
@@ -164,12 +164,29 @@ def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file
     (The old [[user, bot], ...] tuple format causes 'data incompatible with keys'.)
     """
     def chat(user_message: str, history: list, conversation_history: list,
-             model_label: str):
+             search_type: str):
         if not user_message.strip():
             return history, conversation_history, [], format_memory_status(memory)
 
-        # Resolve the selected model ID
-        model_id = MODEL_IDS.get(model_label, "models/gemini-3.5-flash")
+        # 1. Determine Search Type
+        use_hybrid = "Hybrid" in search_type
+        
+        # 2. Build the tool dynamically based on UI selection
+        search_fn, search_tool = build_search_tool(
+            collection=collection,
+            gemini_client=gemini_client,
+            s3_client=s3_client,
+            bucket=bucket_name,
+            use_hybrid=use_hybrid
+        )
+        tool_map = {"search_knowledge_base": search_fn}
+        
+        # 3. Create generation config with the specific tool and memory
+        from agent import build_agent_config
+        generation_config = build_agent_config(search_tool, memory)
+
+        # 4. Use the resilient auto-routing from GeminiRouter
+        model_id = "models/gemini-3.5-flash"  # GeminiRouter handles the actual fallback logic
 
         # Append user message in Gradio 6.x messages format
         history = history + [{"role": "user", "content": user_message}]
@@ -187,16 +204,15 @@ def make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file
         except Exception as e:
             if is_rate_limit_error(e):
                 error_msg = (
-                    f"⚠️ **Daily limit reached for `{model_label}`.**\n\n"
-                    "The free-tier quota for this model is used up for today.\n"
-                    "👉 **Switch to a different model** using the selector in the sidebar, "
-                    "then resend your question."
+                    f"⚠️ **Daily limit reached.**\n\n"
+                    "The free-tier quota is used up for today.\n"
+                    "👉 **Please try again tomorrow.**"
                 )
             elif is_overload_error(e):
                 error_msg = (
-                    f"⚠️ **`{model_label}` is temporarily overloaded** (high demand).\n\n"
+                    f"⚠️ **The model is temporarily overloaded** (high demand).\n\n"
                     "This is usually resolved in a few minutes.\n"
-                    "👉 **Try a different model** using the selector, or wait a moment and retry."
+                    "👉 **Wait a moment and retry.**"
                 )
             else:
                 error_msg = f"❌ **Unexpected error:** {e}"
@@ -243,8 +259,8 @@ def make_save_fn(gemini_client, memory, memory_file):
 
 # ── Gradio UI ─────────────────────────────────────────────────────────────────
 
-def build_ui(gemini_client, generation_config, tool_map, memory, memory_file, s3_client, collection, bucket_name):
-    chat_fn = make_chat_fn(gemini_client, generation_config, tool_map, memory, memory_file)
+def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_name):
+    chat_fn = make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, bucket_name)
     save_fn = make_save_fn(gemini_client, memory, memory_file)
     upload_fn = make_upload_fn(s3_client, bucket_name, collection)
 
@@ -264,12 +280,12 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file, s3
                     """
                 )
             with gr.Column(scale=2):
-                model_dropdown = gr.Dropdown(
-                    choices=MODEL_LABELS,
-                    value=DEFAULT_MODEL_LABEL,
-                    label="🤖 Gemini Model",
+                search_type_toggle = gr.Radio(
+                    choices=["Standard Vector Search", "Agentic Hybrid Search (RRF)"],
+                    value="Agentic Hybrid Search (RRF)",
+                    label="🔍 Retrieval Engine",
                     interactive=True,
-                    info="Switch models if you hit a daily limit",
+                    info="Toggle between basic semantic search and the dual-engine BM25+Vector pipeline.",
                 )
 
         # ── Main layout ────────────────────────────────────────────────
@@ -316,11 +332,10 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file, s3
                 # ── Example questions ──────────────────────────────────────────────
                 gr.Examples(
                     examples=[
-                        ["What were the key takeaways from the Q3 earnings report?"],
-                        ["What is the company's year-over-year revenue growth?"],
-                        ["Summarize the risk factors mentioned in the document."],
-                        ["Who are the main competitors listed?"],
-                        ["What does the chart on page 4 indicate about operating margins?"],
+                        ["What are the common symptoms of a cold?"],
+                        ["Does Vitamin C prevent the common cold?"],
+                        ["What is Reciprocal Rank Fusion (RRF)?"],
+                        ["Explain the self-attention mechanism in Transformers."],
                     ],
                     inputs=user_input,
                     label="Try these questions:",
@@ -344,13 +359,13 @@ def build_ui(gemini_client, generation_config, tool_map, memory, memory_file, s3
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        def submit(message, history, conv_history, model_label):
-            return chat_fn(message, history, conv_history, model_label)
+        def submit(message, history, conv_history, search_type):
+            return chat_fn(message, history, conv_history, search_type)
 
-        # Sync model dropdown → model state
-        model_dropdown.change(
+        # Sync toggle → model state
+        search_type_toggle.change(
             fn=lambda label: label,
-            inputs=model_dropdown,
+            inputs=search_type_toggle,
             outputs=model_state,
         )
 
@@ -408,10 +423,7 @@ def main():
     gemini_client     = create_gemini_router(settings.GEMINI_API_KEYS)
     s3_client         = create_s3_client()
     collection        = load_chroma_collection(args.collection, args.chroma_path)
-    search_fn, search_tool = build_search_tool(collection, gemini_client, s3_client, settings.S3_BUCKET_NAME)
-    tool_map          = {"search_knowledge_base": search_fn}
     memory            = load_memory(args.memory_file)
-    generation_config = build_agent_config(search_tool, memory)
 
     logger.info("─" * 40)
     logger.info(f"✅ All systems ready — launching Gradio on port {args.port}")
@@ -420,8 +432,6 @@ def main():
 
     demo = build_ui(
         gemini_client=gemini_client,
-        generation_config=generation_config,
-        tool_map=tool_map,
         memory=memory,
         memory_file=args.memory_file,
         s3_client=s3_client,
