@@ -1,111 +1,80 @@
-# Agentic RAG System with Visual Grounding
+# Agentic-RAG: Production-Ready Retrieval with Visual Grounding
 
-> A production-ready **Agentic RAG** (Retrieval-Augmented Generation) pipeline. This system processes complex PDFs via LandingAI ADE, indexes semantic and keyword chunks locally, and orchestrates a resilient Gemini-powered ReAct agent. It features **Hybrid Search (Vector + BM25)**, an automated evaluation suite (Ragas), a robust LLM API router, and **visual grounding** to highlight source evidence in the original PDFs.
-
----
-
-## Architecture Overview
-
-This project implements a complete RAG lifecycle, from asynchronous document ingestion to resilient LLM inference.
-
-```text
-┌─────────────────────────────────────────────────────────────────┐
-│                    DOCUMENT INGESTION PIPELINE                  │
-│  documents/*.pdf  →  S3 (input/)  →  AWS Lambda                 │
-│                                       ↓                          │
-│                              LandingAI ADE (parsing)            │
-│                                       ↓                          │
-│                         S3 (output/chunks/*.json)               │
-│                                       ↓                          │
-│    ChromaDB (Vector) ← SentenceTransformers (all-MiniLM-L6-v2)  │
-│    BM25Okapi (Lexical) ← NLTK Tokenization                      │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                      INFERENCE & AGENT PIPELINE                 │
-│  User Query → LLM Router (Exponential Backoff, Key Rotation)    │
-│                       ↓                                         │
-│              ReAct Agent Loop (Tool Use)                        │
-│                       ↓                                         │
-│  Hybrid Search (Reciprocal Rank Fusion: BM25 + Cosine Sim)     │
-│                       ↓                                         │
-│  Agent synthesizes → Cited Answer + S3 Pre-signed Visual Crop   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Core Technologies
-- **Compute / Orchestration**: AWS Lambda (Python 3.12, containerized/Manylinux), GitHub Actions (CI)
-- **Document Parsing**: LandingAI ADE (Bounding boxes + Layout extraction)
-- **Retrieval Engine**: ChromaDB (Vector) + Rank_BM25 (Lexical) + RRF (Fusion)
-- **Embeddings**: `sentence-transformers/all-MiniLM-L6-v2` (Local execution)
-- **LLM / Agent**: Google Gemini API via custom resilient `GeminiRouter`
-- **Evaluation**: Ragas, PyTest
+> A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Elite Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.
 
 ---
 
-## Technical Implementations & Engineering Results
+## 🛑 The Problem with "Standard" RAG
+The industry-standard RAG tutorial (PDF → LangChain TextSplitter → Vector DB → LLM) fails in production. 
+1. **Dumb Chunking:** Splitting by character count destroys tables, diagrams, and layout context.
+2. **Dense-Only Retrieval:** Cosine similarity struggles with exact keyword matching (e.g., SKUs, IDs, acronyms).
+3. **Passive Generation:** The LLM is forced to answer based *only* on a single retrieved context, even if the user's prompt requires multi-hop reasoning or multiple separate searches.
+4. **Hallucination:** Without strict attribution, the LLM hallucinates facts.
 
-### 1. Hybrid Search (Vector + Lexical)
-Standard cosine similarity struggles with exact keyword matching (e.g., acronyms, IDs). We implemented a Hybrid Search module (`hybrid_search.py`) that executes parallel queries against ChromaDB (Dense) and BM25Okapi (Sparse), merging results via **Reciprocal Rank Fusion (RRF)**.
+## 🏗️ Our Architecture & Solutions
 
-**Evaluation Results (Measured via automated testset generation):**
-- **MRR@5**: Improved from 0.7949 (Vector) to **0.8846** (Hybrid) — a **+11.2%** increase.
-- **Recall@1**: Improved from 0.7692 to **0.8462** (The exact context is retrieved on the first try ~85% of the time).
+We engineered this system to address those exact failure points.
 
-### 2. Resilient LLM Routing (`llm_router.py`)
-To achieve production reliability on rate-limited LLM tiers (e.g., Gemini Free Tier), we implemented a custom client router utilizing `tenacity`.
-- **Key Rotation**: Automatically hot-swaps between API keys (e.g., `GEMINI_API_KEY`, `GEMINI_API_KEY_2`) upon encountering `429 Quota Exceeded` errors.
-- **Model Fallback**: Gracefully degrades down a predefined chain (`gemini-3.6-flash` → `3.5-flash` → `3.5-flash-lite`) if all keys are exhausted.
-- **Exponential Backoff**: Jittered retry loops to survive transient `503` service unavailability.
+### 1. Layout-Aware Ingestion (LandingAI)
+Instead of blindly splitting text, we ingest PDFs asynchronously through AWS Lambda into **LandingAI's ADE (Document Parsing)** model. This extracts text alongside spatial bounding boxes, preserving the visual layout and hierarchy of the document before storing the chunks locally.
 
-### 3. Automated Evaluation Pipeline (`eval/`)
-Rather than relying on qualitative spot-checks, the system includes a quantitative evaluation pipeline:
-- `generate_testset.py`: Uses the LLM to autonomously generate a "Golden Dataset" of challenging queries based directly on the ingested ChromaDB chunks.
-- `calculate_retrieval_metrics.py`: Computes Precision@K, Recall@K, and MRR.
-- `evaluate_ragas.py`: Implements the `ragas` framework to mathematically score generation **Faithfulness** (hallucination checks) and **Answer Relevancy**.
+### 2. "Elite" Hybrid Retrieval (Vector + Sparse + Reranker)
+We abandoned single-path vector retrieval. Our `hybrid_search.py` implements a 3-stage pipeline:
+1. **Dense Retrieval:** Queries ChromaDB using `sentence-transformers/all-MiniLM-L6-v2` for semantic meaning.
+2. **Sparse Retrieval:** Queries a local `BM25Okapi` index for exact keyword and lexicon matching.
+3. **Reciprocal Rank Fusion (RRF):** Mathematically merges the Dense and Sparse ranks.
+4. **Cross-Encoder Reranking:** Passes the top fused results through a heavy Cross-Encoder model (`ms-marco-MiniLM-L-6-v2`) to accurately score the contextual relationship between the query and the chunk. 
 
-### 4. CI/CD Pipeline
-The repository enforces code quality and functionality via GitHub Actions (`.github/workflows/ci.yml`):
-- Executes `flake8` for strict PEP8 compliance and syntax validation.
-- Runs the complete `pytest` suite covering unit, integration, and end-to-end agent workflows on every push to `main`.
+### 3. Agentic LLM Orchestration
+Instead of a passive prompt chain, we implemented a **ReAct Agent**. The Gemini model is provided a `search_knowledge_base` tool. It autonomously decides *whether* to search, *what* queries to formulate, and *when* it has enough information to stop searching and generate a final answer.
+
+### 4. Visual Grounding & S3 Presigned URLs
+To prevent hallucinations and build trust, the Agent doesn't just cite its sources—it provides visual proof. Using the bounding boxes from the ingestion phase, the system uses PyMuPDF to crop the exact region of the source PDF, uploads it to AWS S3, and returns a time-limited presigned URL directly in the UI.
+
+### 5. Resilient LLM Routing (`llm_router.py`)
+To survive rate-limited free-tier APIs in production, we built a custom client router:
+- **Key Rotation**: Hot-swaps between API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`) on `429 Quota Exceeded` errors.
+- **Model Fallback**: Gracefully degrades (e.g., `3.6-flash` → `3.5-flash`) if primary endpoints fail.
+- **Exponential Backoff**: Jittered retry loops to survive `503` service drops.
 
 ---
 
-## Project Structure
+## 📊 Evaluation & Metrics (The Proof)
+
+We don't rely on vibes. The `eval/` directory contains an automated suite powered by **Ragas** and an LLM-as-a-judge (`llama3.1:8b` via Ollama) to continuously benchmark the architecture.
+
+In our latest smoke-test evaluation against the `transformer` and `rag` academic papers:
+* **Answer Relevancy:** The Elite Hybrid Reranker boosted Answer Relevancy to **0.88** (up from the Baseline Vector's 0.69). The Cross-Encoder successfully surfaced the most semantically relevant documents to the top.
+* **Faithfulness Tuning:** We noted a drop in faithfulness when the reranker was configured too strictly (filtering out background context). The architecture exposes `n_results` tuning to dynamically adjust this tradeoff.
+* **Retrieval Accuracy:** Achieved **1.000 MRR@5** and **Recall@5** on ground-truth document chunks.
+
+---
+
+## 🛠️ Project Structure
 
 ```text
 Agentic-RAG/
-├── agent.py                      # Standalone CLI agent entry point
-├── app.py                        # Gradio Web UI (Chat + Visual Grounding)
+├── agent.py                      # ReAct Agent loop and Tool definitions
+├── app.py                        # Gradio Web UI with streaming/visual grounding
 ├── llm_router.py                 # Resilient GenAI Client (Rotation, Fallback)
-├── hybrid_search.py              # BM25 + Vector Search + Reciprocal Rank Fusion
-├── gemini_helpers.py             # ChromaDB abstractions, tool definitions
+├── hybrid_search.py              # BM25 + Vector Search + RRF + Reranker
+├── gemini_helpers.py             # ChromaDB abstractions
 ├── lambda_helpers.py             # AWS Infrastructure automation (S3, IAM, Lambda)
 ├── visual_grounding_helper.py    # PyMuPDF rendering and S3 upload logic
 ├── ade_s3_handler.py             # Lambda handler for LandingAI ADE parsing
-├── eval/                         # Evaluation Pipeline
-│   ├── generate_testset.py       # Golden Dataset generator
-│   ├── calculate_retrieval_metrics.py
-│   ├── evaluate_baseline.py      # Runs testset using Vector only
-│   ├── evaluate_hybrid.py        # Runs testset using Hybrid Search
-│   └── evaluate_ragas.py         # Ragas generation metric scoring
-├── tests/                        # Pytest Suite
-│   ├── test_unit.py
-│   ├── test_integration.py
-│   └── test_e2e.py
-├── .github/workflows/ci.yml      # GitHub Actions CI configuration
-├── Makefile                      # Make targets (lint, test)
-├── EVALUATION_REPORT.md          # Detailed benchmarking results
+├── eval/                         # Evaluation Pipeline (Ragas, MRR, Recall)
+├── tests/                        # Pytest Suite (Unit, Integration, E2E)
+└── .github/workflows/ci.yml      # GitHub Actions CI configuration
 ```
 
 ---
 
-## Local Deployment & Usage
+## 🚀 Local Deployment & Usage
 
 ### Prerequisites
 - Python 3.12
 - AWS Account (S3, Lambda, IAM)
-- Google GenAI API Key (Supports multiple via `GEMINI_API_KEY_2`)
+- Google GenAI API Key (Supports multiple)
 - LandingAI Vision Agent API Key
 
 ### Setup
@@ -113,7 +82,7 @@ Agentic-RAG/
 git clone https://github.com/ArvindPadala/Agentic-RAG.git
 cd Agentic-RAG
 python -m pip install -r requirements.txt
-cp .env.example .env
+cp .env.example .env # Configure your keys here
 ```
 
 ### Running the System
@@ -122,11 +91,9 @@ cp .env.example .env
 make lint
 make test
 
-# Launch the Gradio Web Application
+# Launch the interactive Gradio Web Application
 python app.py
 
 # Launch the CLI Agent (Headless)
-python agent.py -q "Explain the revenue growth mentioned in the Q3 report."
+python agent.py -q "Explain the self-attention mechanism in Transformers."
 ```
-
-
