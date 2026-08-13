@@ -1,0 +1,37 @@
+question,ground_truth,contexts,source,answer
+"In contrast to prior work that examined retrieval in isolated NLP tasks, what key advance does the authors' work demonstrate regarding retrieval-based architectures?",The authors' work unifies previous successes by demonstrating that a single retrieval-based architecture is capable of achieving strong performance across several tasks.,"[""<a id='f259359a-3df8-431c-80e2-10f20214b33c'></a>\n\n## 5 Related Work\n\n**Single-Task Retrieval** Prior work has shown that retrieval improves performance across a variety of NLP tasks when considered in isolation. Such tasks include open-domain question answering [5, 29], fact checking [56], fact completion [48], long-form question answering [12], Wikipedia article generation [36], dialogue [41, 65, 9, 13], translation [17], and language modeling [19, 27]. Our work unifies previous successes in incorporating retrieval into individual tasks, showing that a single retrieval-based architecture is capable of achieving strong performance across several tasks.""]",rag,"In contrast to prior work that examined retrieval only in isolated, task-specific contexts (e.g., open-domain QA, fact checking, dialogue, or translation), the authors demonstrate two key advances regarding retrieval-based architectures:
+
+1. **A Single, Unified Architecture Across Diverse Tasks:**
+   Prior approaches leveraged distinct retrieval architectures and optimization techniques designed specifically for individual downstream tasks. In contrast, the authors show that a **single, general-purpose retrieval-based architecture** can be fine-tuned to achieve state-of-the-art or strong performance across a wide variety of knowledge-intensive tasks—both generative and discriminative—without needing task-specific retrieval designs.
+
+2. **Augmenting Pre-Trained Generative Models with Learned Retrieval:**
+   The authors expand the scope of general-purpose NLP architectures by combining pre-trained, generative language models with a learned, end-to-end retrievable memory component over raw text documents.
+
+---
+
+### Key Evidence & Citations from the Paper
+
+* **Unifying Single-Task Successes:**
+  > *""Our work unifies previous successes in incorporating retrieval into individual tasks, showing that a single retrieval-based architecture is capable of achieving strong performance across several tasks.""*  
+  — **Page 7** ([Visual Reference](https://arvind-agentic-rag-2026.s3.amazonaws.com/output/chunk_images/rag_f259359a-3df8-431c-80e2-10f20214b33c.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA6D6JBUZMSC46T2KY%2F20260813%2Fus-east-2%2Fs3%2Faws4_request&X-Amz-Date=20260813T033627Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=6368b0aff1f866557aae455709060b7a6c9b41607b98baae2ad5b7d960b5c7ee))
+
+* **Task Generalization vs. Task-Specific Retrieval:**
+  > *""These successes leverage different retrieval-based architectures and optimization techniques to achieve strong performance on a single task, while we show that a single retrieval-based architecture can be fine-tuned for strong performance on a variety of tasks.""*  
+  — **Page 8** ([Visual Reference](https://arvind-agentic-rag-2026.s3.amazonaws.com/output/chunk_images/rag_4c94859a-301c-4fe2-aeef-2b5f789ba513.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA6D6JBUZMSC46T2KY%2F20260813%2Fus-east-2%2Fs3%2Faws4_request&X-Amz-Date=20260813T033628Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=78b77ce37477e53a4c445f3b9ec99f55fa3a7843f19c45e68aa9213d7c59c4e9))"
+Under what specific condition and for what restricted purposes does Google grant permission to reproduce the tables and figures in the paper?,"Google grants permission on the condition that proper attribution is provided, and solely for use in journalistic or scholarly works.","[""<a id='28c6cb81-ad8d-4f27-a87a-f5682e509ec1'></a>\n\nProvided proper attribution is provided, Google hereby grants permission to reproduce the tables and figures in this paper solely for use in journalistic or scholarly works.""]",transformer,"Based on the document, Google grants permission to reproduce the tables and figures in the paper under the following condition and for the following restricted purposes:
+
+*   **Specific Condition:** Proper attribution must be provided.
+*   **Restricted Purposes:** The reproduction must be solely for use in **journalistic** or **scholarly** works.
+
+### Source Reference:
+*   **Document:** *Attention Is All You Need* (transformer)
+*   **Page:** 0
+*   **Visual Reference:** [View Source Image](https://arvind-agentic-rag-2026.s3.amazonaws.com/output/chunk_images/transformer_28c6cb81-ad8d-4f27-a87a-f5682e509ec1.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA6D6JBUZMSC46T2KY%2F20260813%2Fus-east-2%2Fs3%2Faws4_request&X-Amz-Date=20260813T033639Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=6617f23e162181be31ce46ed7f0cb0a17b5ef10b2f6f2784135d83bd09103cef)"
+What specific process inhibits a model using a single attention head from jointly attending to information from different representation subspaces at different positions?,Averaging,"[""<a id='263ce9ff-c7d3-4b87-adc1-289facfc8cd6'></a>\n\nMulti-head attention allows the model to jointly attend to information from different representation subspaces at different positions. With a single attention head, averaging inhibits this.""]",transformer,"The specific process that inhibits a model using a single attention head from jointly attending to information from different representation subspaces at different positions is **averaging**. 
+
+While multi-head attention allows the model to project queries, keys, and values into multiple subspaces and perform attention in parallel, a single attention head is limited because the averaging operation inherent in its attention mechanism prevents it from simultaneously focusing on diverse representation subspaces at different positions.
+
+### Reference:
+* **Source Document:** *Attention Is All You Need* (transformer)
+* **Page:** 4
+* **Visual Reference:** [View Highlighted Source Document](https://arvind-agentic-rag-2026.s3.amazonaws.com/output/chunk_images/transformer_263ce9ff-c7d3-4b87-adc1-289facfc8cd6.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIA6D6JBUZMSC46T2KY%2F20260813%2Fus-east-2%2Fs3%2Faws4_request&X-Amz-Date=20260813T033645Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=e540a65e2303357b5f79bfb18060fa22a7c60ad96c606a5dc5643e5941baa886)"

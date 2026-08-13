@@ -1,5 +1,8 @@
 Baseline Vector Search Metrics:
-{'faithfulness': nan, 'answer_relevancy': nan}
+{'faithfulness': 0.9167, 'answer_relevancy': 0.6933}
 
 Hybrid Agent Metrics:
-{'faithfulness': nan, 'answer_relevancy': nan}
+{'faithfulness': 0.8750, 'answer_relevancy': 0.7108}
+
+Elite Hybrid (Reranker) Agent Metrics:
+{'faithfulness': 0.5556, 'answer_relevancy': 0.8823}

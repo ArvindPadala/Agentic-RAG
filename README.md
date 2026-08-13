@@ -13,26 +13,26 @@ The industry-standard RAG tutorial (PDF → LangChain TextSplitter → Vector DB
 
 ## 🏗️ Our Architecture & Solutions
 
-We engineered this system to address those exact failure points.
+I engineered this system to address those exact failure points.
 
 ### 1. Layout-Aware Ingestion (LandingAI)
-Instead of blindly splitting text, we ingest PDFs asynchronously through AWS Lambda into **LandingAI's ADE (Document Parsing)** model. This extracts text alongside spatial bounding boxes, preserving the visual layout and hierarchy of the document before storing the chunks locally.
+Instead of blindly splitting text, I ingest PDFs asynchronously through AWS Lambda into **LandingAI's ADE (Document Parsing)** model. This extracts text alongside spatial bounding boxes, preserving the visual layout and hierarchy of the document before storing the chunks locally.
 
 ### 2. "Elite" Hybrid Retrieval (Vector + Sparse + Reranker)
-We abandoned single-path vector retrieval. Our `hybrid_search.py` implements a 3-stage pipeline:
+I abandoned single-path vector retrieval. My `hybrid_search.py` implements a 3-stage pipeline:
 1. **Dense Retrieval:** Queries ChromaDB using `sentence-transformers/all-MiniLM-L6-v2` for semantic meaning.
 2. **Sparse Retrieval:** Queries a local `BM25Okapi` index for exact keyword and lexicon matching.
 3. **Reciprocal Rank Fusion (RRF):** Mathematically merges the Dense and Sparse ranks.
 4. **Cross-Encoder Reranking:** Passes the top fused results through a heavy Cross-Encoder model (`ms-marco-MiniLM-L-6-v2`) to accurately score the contextual relationship between the query and the chunk. 
 
 ### 3. Agentic LLM Orchestration
-Instead of a passive prompt chain, we implemented a **ReAct Agent**. The Gemini model is provided a `search_knowledge_base` tool. It autonomously decides *whether* to search, *what* queries to formulate, and *when* it has enough information to stop searching and generate a final answer.
+Instead of a passive prompt chain, I implemented a **ReAct Agent**. The Gemini model is provided a `search_knowledge_base` tool. It autonomously decides *whether* to search, *what* queries to formulate, and *when* it has enough information to stop searching and generate a final answer.
 
 ### 4. Visual Grounding & S3 Presigned URLs
 To prevent hallucinations and build trust, the Agent doesn't just cite its sources—it provides visual proof. Using the bounding boxes from the ingestion phase, the system uses PyMuPDF to crop the exact region of the source PDF, uploads it to AWS S3, and returns a time-limited presigned URL directly in the UI.
 
 ### 5. Resilient LLM Routing (`llm_router.py`)
-To survive rate-limited free-tier APIs in production, we built a custom client router:
+To survive rate-limited free-tier APIs in production, I built a custom client router:
 - **Key Rotation**: Hot-swaps between API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`) on `429 Quota Exceeded` errors.
 - **Model Fallback**: Gracefully degrades (e.g., `3.6-flash` → `3.5-flash`) if primary endpoints fail.
 - **Exponential Backoff**: Jittered retry loops to survive `503` service drops.
@@ -41,11 +41,11 @@ To survive rate-limited free-tier APIs in production, we built a custom client r
 
 ## 📊 Evaluation & Metrics (The Proof)
 
-We don't rely on vibes. The `eval/` directory contains an automated suite powered by **Ragas** and an LLM-as-a-judge (`llama3.1:8b` via Ollama) to continuously benchmark the architecture.
+I don't rely on vibes. The `eval/` directory contains an automated suite powered by **Ragas** and an LLM-as-a-judge (`llama3.1:8b` via Ollama) to continuously benchmark the architecture.
 
-In our latest smoke-test evaluation against the `transformer` and `rag` academic papers:
+In my latest smoke-test evaluation against the `transformer` and `rag` academic papers:
 * **Answer Relevancy:** The Elite Hybrid Reranker boosted Answer Relevancy to **0.88** (up from the Baseline Vector's 0.69). The Cross-Encoder successfully surfaced the most semantically relevant documents to the top.
-* **Faithfulness Tuning:** We noted a drop in faithfulness when the reranker was configured too strictly (filtering out background context). The architecture exposes `n_results` tuning to dynamically adjust this tradeoff.
+* **Faithfulness Tuning:** I noted a drop in faithfulness when the reranker was configured too strictly (filtering out background context). The architecture exposes `n_results` tuning to dynamically adjust this tradeoff.
 * **Retrieval Accuracy:** Achieved **1.000 MRR@5** and **Recall@5** on ground-truth document chunks.
 
 ---
