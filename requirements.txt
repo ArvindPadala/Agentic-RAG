@@ -21,3 +21,4 @@ gradio>=6.0
 # landingai-ade
 # typing-extensions>=4.7
 rank_bm25>=0.2.2
+sentence-transformers>=3.0.0

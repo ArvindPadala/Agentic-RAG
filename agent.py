@@ -82,7 +82,7 @@ def load_chroma_collection(collection_name: str, chroma_path: str = "./chroma_db
 
 
 # ── 4. Search Tool ────────────────────────────────────────────────────────────
-def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hybrid: bool = False):
+def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hybrid: bool = False, use_reranker: bool = False):
     """
     Build the search_knowledge_base function that the Gemini agent will call.
 
@@ -104,6 +104,7 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hyb
                 query=query,
                 collection=collection,
                 n_results=5,
+                use_reranker=use_reranker,
             )
         else:
             results = search_chroma(

@@ -4,6 +4,18 @@ import re
 # Global cache for BM25 to avoid rebuilding on every query
 _BM25_CACHE = {}
 
+# Global cache for the Cross-Encoder model to avoid slow reloads
+_RERANKER_MODEL = None
+
+def get_reranker():
+    global _RERANKER_MODEL
+    if _RERANKER_MODEL is None:
+        from sentence_transformers import CrossEncoder
+        import logging
+        logging.info("⏳ Loading Cross-Encoder reranker model (this may take a moment on first run)...")
+        _RERANKER_MODEL = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+    return _RERANKER_MODEL
+
 
 def get_bm25_index(collection, collection_name):
     if collection_name in _BM25_CACHE:
@@ -32,7 +44,7 @@ from langsmith import traceable
 import json
 
 @traceable(run_type="retriever")
-def search_chroma_hybrid(query: str, collection, n_results: int = 5) -> list[dict]:
+def search_chroma_hybrid(query: str, collection, n_results: int = 5, use_reranker: bool = False) -> list[dict]:
     if collection.count() == 0:
         return []
 
@@ -83,8 +95,26 @@ def search_chroma_hybrid(query: str, collection, n_results: int = 5) -> list[dic
             rrf_scores[cid] = {"rrf": 0, "text": text, "meta": meta, "v_score": 0, "b_score": b_score}
         rrf_scores[cid]["rrf"] += 1.0 / (k + rank + 1)
 
-    # Sort by RRF score
+    # Sort by RRF score initially
     sorted_fused = sorted(rrf_scores.items(), key=lambda x: x[1]["rrf"], reverse=True)
+
+    # 4. Optional: Cross-Encoder Reranking
+    if use_reranker:
+        reranker = get_reranker()
+        # Take the top N*2 from RRF to rerank
+        top_k_fused = sorted_fused[:n_results * 2]
+        
+        # Prepare pairs: (query, document_text)
+        cross_inp = [[query, data["text"]] for _, data in top_k_fused]
+        cross_scores = reranker.predict(cross_inp)
+        
+        # Update scores in our list and resort
+        for i in range(len(top_k_fused)):
+            chunk_id = top_k_fused[i][0]
+            # Override RRF score with the more accurate Cross-Encoder logit
+            rrf_scores[chunk_id]["rerank_score"] = float(cross_scores[i])
+            
+        sorted_fused = sorted(top_k_fused, key=lambda x: x[1]["rerank_score"], reverse=True)
 
     formatted = []
     for chunk_id, data in sorted_fused[:n_results]:
@@ -98,7 +128,7 @@ def search_chroma_hybrid(query: str, collection, n_results: int = 5) -> list[dic
         formatted.append({
             "chunk_id": chunk_id,
             "text": data["text"],
-            "score": round(data["rrf"], 4),  # using RRF as score
+            "score": round(data.get("rerank_score", data["rrf"]), 4),  # using Rerank or RRF as score
             "source_document": meta.get("source_document", "Unknown"),
             "page": meta.get("page", 1),
             "chunk_type": meta.get("chunk_type", "Unknown"),

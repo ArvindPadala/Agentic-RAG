@@ -170,6 +170,7 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
 
         # 1. Determine Search Type
         use_hybrid = "Hybrid" in search_type
+        use_reranker = "Reranker" in search_type
         
         # 2. Build the tool dynamically based on UI selection
         search_fn, search_tool = build_search_tool(
@@ -177,7 +178,8 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
             gemini_client=gemini_client,
             s3_client=s3_client,
             bucket=bucket_name,
-            use_hybrid=use_hybrid
+            use_hybrid=use_hybrid,
+            use_reranker=use_reranker
         )
         tool_map = {"search_knowledge_base": search_fn}
         
@@ -281,11 +283,15 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
                 )
             with gr.Column(scale=2):
                 search_type_toggle = gr.Radio(
-                    choices=["Standard Vector Search", "Agentic Hybrid Search (RRF)"],
-                    value="Agentic Hybrid Search (RRF)",
+                    choices=[
+                        "Standard Vector Search", 
+                        "Agentic Hybrid Search (RRF)",
+                        "Elite Hybrid Search (RRF + Reranker)"
+                    ],
+                    value="Elite Hybrid Search (RRF + Reranker)",
                     label="🔍 Retrieval Engine",
                     interactive=True,
-                    info="Toggle between basic semantic search and the dual-engine BM25+Vector pipeline.",
+                    info="Toggle between semantic search, BM25+Vector fusion, or 2-stage Cross-Encoder reranking.",
                 )
 
         # ── Main layout ────────────────────────────────────────────────
