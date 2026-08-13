@@ -41,6 +41,11 @@ def main():
     hybrid_recall_3 = []
     hybrid_recall_5 = []
 
+    elite_mrr = []
+    elite_recall_1 = []
+    elite_recall_3 = []
+    elite_recall_5 = []
+
     for _, row in df.iterrows():
         question = row["question"]
         try:
@@ -67,6 +72,15 @@ def main():
         hybrid_recall_3.append(calculate_recall_at_k(hybrid_texts, ground_truth_context, 3))
         hybrid_recall_5.append(calculate_recall_at_k(hybrid_texts, ground_truth_context, 5))
 
+        # 3. Elite Hybrid Search (Reranker)
+        elite_results = search_chroma_hybrid(query=question, collection=coll, n_results=5, use_reranker=True)
+        elite_texts = [r["text"] for r in elite_results]
+
+        elite_mrr.append(calculate_mrr(elite_texts, ground_truth_context))
+        elite_recall_1.append(calculate_recall_at_k(elite_texts, ground_truth_context, 1))
+        elite_recall_3.append(calculate_recall_at_k(elite_texts, ground_truth_context, 3))
+        elite_recall_5.append(calculate_recall_at_k(elite_texts, ground_truth_context, 5))
+
     print("\n=== Retrieval Metrics ===")
     print(f"Total Questions: {len(df)}")
     print("\n--- Baseline (Vector Only) ---")
@@ -81,6 +95,12 @@ def main():
     print(f"Recall@3:   {sum(hybrid_recall_3)/len(hybrid_recall_3):.4f}")
     print(f"Recall@5:   {sum(hybrid_recall_5)/len(hybrid_recall_5):.4f}")
 
+    print("\n--- Elite Hybrid (RRF + Reranker) ---")
+    print(f"MRR@5:      {sum(elite_mrr)/len(elite_mrr):.4f}")
+    print(f"Recall@1:   {sum(elite_recall_1)/len(elite_recall_1):.4f}")
+    print(f"Recall@3:   {sum(elite_recall_3)/len(elite_recall_3):.4f}")
+    print(f"Recall@5:   {sum(elite_recall_5)/len(elite_recall_5):.4f}")
+
     with open("eval/metrics.json", "w") as f:
         json.dump({
             "baseline": {
@@ -94,6 +114,12 @@ def main():
                 "recall_1": sum(hybrid_recall_1)/len(hybrid_recall_1),
                 "recall_3": sum(hybrid_recall_3)/len(hybrid_recall_3),
                 "recall_5": sum(hybrid_recall_5)/len(hybrid_recall_5)
+            },
+            "elite": {
+                "mrr_5": sum(elite_mrr)/len(elite_mrr),
+                "recall_1": sum(elite_recall_1)/len(elite_recall_1),
+                "recall_3": sum(elite_recall_3)/len(elite_recall_3),
+                "recall_5": sum(elite_recall_5)/len(elite_recall_5)
             }
         }, f, indent=4)
 

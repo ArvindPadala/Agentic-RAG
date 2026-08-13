@@ -49,6 +49,7 @@ def main():
     print("Loading datasets...")
     baseline_ds = prepare_dataset("eval/baseline_results.csv")
     hybrid_ds = prepare_dataset("eval/hybrid_results.csv")
+    reranker_ds = prepare_dataset("eval/reranker_results.csv")
 
     metrics = [faithfulness, answer_relevancy]
 
@@ -80,13 +81,30 @@ def main():
     )
     print("Hybrid RAGAS Metrics:")
     print(hybrid_result)
+
+    print("\nSleeping for 60s to let rate limits cool down...")
+    time.sleep(60)
+
+    print("\n--- Evaluating Elite Hybrid (Reranker) Agent ---")
+    reranker_result = evaluate(
+        reranker_ds,
+        metrics=metrics,
+        llm=llm,
+        embeddings=embeddings,
+        raise_exceptions=False,
+        run_config=run_config,
+    )
+    print("Elite Hybrid RAGAS Metrics:")
+    print(reranker_result)
     
     # Save results
     with open("eval/ragas_metrics.txt", "w") as f:
         f.write("Baseline Vector Search Metrics:\n")
         f.write(str(baseline_result) + "\n\n")
         f.write("Hybrid Agent Metrics:\n")
-        f.write(str(hybrid_result) + "\n")
+        f.write(str(hybrid_result) + "\n\n")
+        f.write("Elite Hybrid (Reranker) Agent Metrics:\n")
+        f.write(str(reranker_result) + "\n")
         
     print("\nEvaluation complete! Results saved to eval/ragas_metrics.txt")
 
