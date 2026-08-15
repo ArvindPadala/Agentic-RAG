@@ -22,10 +22,10 @@ def generate_golden_dataset():
         print("No documents found in ChromaDB.")
         return
 
-    # Sample up to 15 chunks to generate questions
+    # Sample up to 100 chunks to generate questions
     import random
     random.seed(42)
-    sample_indices = random.sample(range(len(documents)), min(15, len(documents)))
+    sample_indices = random.sample(range(len(documents)), min(100, len(documents)))
 
     from llm_router import GeminiRouter
     client = GeminiRouter(api_keys=settings.GEMINI_API_KEYS)

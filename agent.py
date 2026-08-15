@@ -460,6 +460,8 @@ def main():
         gemini_client=gemini_client,
         s3_client=s3_client,
         bucket=bucket,
+        use_hybrid=True,
+        use_reranker=True,
     )
     tool_map = {"search_knowledge_base": search_fn}
 

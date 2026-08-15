@@ -77,11 +77,15 @@ class GeminiRouter:
         """
         Wraps genai.models.generate_content with routing and backoff logic.
         """
-        if 'model' in kwargs:
-            kwargs.pop('model')
+        passed_model = kwargs.pop('model', None)
             
         client = self.clients[self.current_key_idx]
-        model_name = self.fallback_models[self.current_model_idx]
+        
+        # If a model was explicitly requested and we haven't fallen back yet, honor it.
+        if passed_model and self.current_model_idx == 0:
+            model_name = passed_model
+        else:
+            model_name = self.fallback_models[self.current_model_idx]
         
         @traceable(run_type="chain", name="gemini_generate_content")
         def _execute(c, cfg, kw):

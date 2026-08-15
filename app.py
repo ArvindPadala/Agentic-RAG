@@ -135,7 +135,9 @@ AVAILABLE_MODELS = [
 ]
 MODEL_LABELS   = [label for label, _ in AVAILABLE_MODELS]
 MODEL_IDS      = {label: mid for label, mid in AVAILABLE_MODELS}
-DEFAULT_MODEL_LABEL = MODEL_LABELS[0]
+
+# We initialize the search UI state to match the radio button's default value
+DEFAULT_SEARCH_LABEL = "Elite Hybrid Search (RRF + Reranker)"
 
 
 def is_rate_limit_error(e: Exception) -> bool:
@@ -270,7 +272,7 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
 
         # ── Session state ──────────────────────────────────────────────────
         conv_state    = gr.State([])
-        model_state   = gr.State(DEFAULT_MODEL_LABEL)   # tracks selected model
+        search_state  = gr.State(DEFAULT_SEARCH_LABEL)   # tracks selected retrieval engine
 
         # ── Header ────────────────────────────────────────────────────────
         with gr.Row(elem_id="header"):
@@ -368,17 +370,17 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
         def submit(message, history, conv_history, search_type):
             return chat_fn(message, history, conv_history, search_type)
 
-        # Sync toggle → model state
+        # Sync toggle → search state
         search_type_toggle.change(
             fn=lambda label: label,
             inputs=search_type_toggle,
-            outputs=model_state,
+            outputs=search_state,
         )
 
         # Send on button click
         send_btn.click(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, model_state],
+            inputs=[user_input, chatbot, conv_state, search_state],
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         ).then(
             fn=lambda: gr.update(value=""),
@@ -388,7 +390,7 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
         # Send on Enter key
         user_input.submit(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, model_state],
+            inputs=[user_input, chatbot, conv_state, search_state],
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         ).then(
             fn=lambda: gr.update(value=""),
