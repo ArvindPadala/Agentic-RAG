@@ -246,6 +246,7 @@ def run_agent_turn(
     tool_map: dict,
     model: str = "models/gemini-3.6-flash",
     max_iterations: int = 5,
+    use_decomposition: bool = False,
 ) -> str:
     """
     Process one user message through the full agent loop.
@@ -258,9 +259,24 @@ def run_agent_turn(
     Uses types.Content objects (not plain dicts) to avoid pydantic v2
     validation errors with the google-genai SDK.
     """
+    if use_decomposition:
+        from query_optimizer import decompose_query
+        sub_queries = decompose_query(user_message, gemini_client)
+        if len(sub_queries) > 1 or (len(sub_queries) == 1 and sub_queries[0] != user_message):
+            formatted_queries = "\n".join([f"- {q}" for q in sub_queries])
+            injected_message = (
+                f"User Question: {user_message}\n\n"
+                f"[System: To answer this, please use your search tool to explore these optimized sub-queries:]\n"
+                f"{formatted_queries}"
+            )
+        else:
+            injected_message = user_message
+    else:
+        injected_message = user_message
+
     # Add user's message to history
     conversation_history.append(
-        genai_types.Content(role="user", parts=[genai_types.Part(text=user_message)])
+        genai_types.Content(role="user", parts=[genai_types.Part(text=injected_message)])
     )
 
     for iteration in range(max_iterations):
@@ -328,7 +344,7 @@ def run_agent_turn(
 
 # ── 7. Chat Loop ──────────────────────────────────────────────────────────────
 def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
-             model: str, memory_file: str):
+             model: str, memory_file: str, use_decomposition: bool = False):
     """Run the interactive chat loop."""
     conversation_history = []  # Fresh history every session
     conversation_num = 0
@@ -372,6 +388,7 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
                 generation_config=generation_config,
                 tool_map=tool_map,
                 model=model,
+                use_decomposition=use_decomposition,
             )
             logger.info(result)
             logger.info(f"\n{'=' * 70}")
@@ -392,7 +409,7 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
 
 # ── 8. Single-question Mode ───────────────────────────────────────────────────
 def ask_single_question(question: str, gemini_client, generation_config,
-                         tool_map: dict, model: str) -> str:
+                         tool_map: dict, model: str, use_decomposition: bool = False) -> str:
     """Answer one question and return the result (no interactive loop)."""
     conversation_history = []
     logger.info(f"\n🔍 Question: {question}\n")
@@ -403,6 +420,7 @@ def ask_single_question(question: str, gemini_client, generation_config,
         generation_config=generation_config,
         tool_map=tool_map,
         model=model,
+        use_decomposition=use_decomposition,
     )
     return answer
 
@@ -441,6 +459,11 @@ def main():
         type=str,
         default="models/gemini-2.5-flash",
         help="Gemini model to use (default: models/gemini-2.5-flash)",
+    )
+    parser.add_argument(
+        "--use-decomposition",
+        action="store_true",
+        help="Enable Query Decomposition pre-processing (default: False)",
     )
     args = parser.parse_args()
 
@@ -484,6 +507,7 @@ def main():
             generation_config=generation_config,
             tool_map=tool_map,
             model=args.model,
+            use_decomposition=args.use_decomposition,
         )
         logger.info(f"\nAnswer:\n{answer}")
     else:
@@ -495,6 +519,7 @@ def main():
             memory=memory,
             model=args.model,
             memory_file=args.memory_file,
+            use_decomposition=args.use_decomposition,
         )
 
 

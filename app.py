@@ -166,7 +166,7 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
     (The old [[user, bot], ...] tuple format causes 'data incompatible with keys'.)
     """
     def chat(user_message: str, history: list, conversation_history: list,
-             search_type: str):
+             search_type: str, use_decomposition: bool):
         if not user_message.strip():
             return history, conversation_history, [], format_memory_status(memory)
 
@@ -204,6 +204,7 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
                 generation_config=generation_config,
                 tool_map=tool_map,
                 model=model_id,
+                use_decomposition=use_decomposition,
             )
         except Exception as e:
             if is_rate_limit_error(e):
@@ -273,6 +274,7 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
         # ── Session state ──────────────────────────────────────────────────
         conv_state    = gr.State([])
         search_state  = gr.State(DEFAULT_SEARCH_LABEL)   # tracks selected retrieval engine
+        decomp_state  = gr.State(False)
 
         # ── Header ────────────────────────────────────────────────────────
         with gr.Row(elem_id="header"):
@@ -294,6 +296,11 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
                     label="🔍 Retrieval Engine",
                     interactive=True,
                     info="Toggle between semantic search, BM25+Vector fusion, or 2-stage Cross-Encoder reranking.",
+                )
+                decomp_toggle = gr.Checkbox(
+                    label="☑️ Enable Query Decomposition (Pre-processing)",
+                    value=False,
+                    info="Breaks complex queries into focused sub-queries before searching."
                 )
 
         # ── Main layout ────────────────────────────────────────────────
@@ -367,8 +374,8 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        def submit(message, history, conv_history, search_type):
-            return chat_fn(message, history, conv_history, search_type)
+        def submit(message, history, conv_history, search_type, use_decomp):
+            return chat_fn(message, history, conv_history, search_type, use_decomp)
 
         # Sync toggle → search state
         search_type_toggle.change(
@@ -376,11 +383,18 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
             inputs=search_type_toggle,
             outputs=search_state,
         )
+        
+        # Sync decomp toggle -> decomp state
+        decomp_toggle.change(
+            fn=lambda val: val,
+            inputs=decomp_toggle,
+            outputs=decomp_state,
+        )
 
         # Send on button click
         send_btn.click(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state],
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state],
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         ).then(
             fn=lambda: gr.update(value=""),
@@ -390,7 +404,7 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
         # Send on Enter key
         user_input.submit(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state],
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state],
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         ).then(
             fn=lambda: gr.update(value=""),

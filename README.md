@@ -25,13 +25,16 @@ I abandoned single-path vector retrieval. My `hybrid_search.py` implements a 3-s
 3. **Reciprocal Rank Fusion (RRF):** Mathematically merges the Dense and Sparse ranks.
 4. **Cross-Encoder Reranking:** Passes the top fused results through a heavy Cross-Encoder model (`ms-marco-MiniLM-L-6-v2`) to accurately score the contextual relationship between the query and the chunk. 
 
-### 3. Agentic LLM Orchestration
-Instead of a passive prompt chain, I implemented a **ReAct Agent**. The Gemini model is provided a `search_knowledge_base` tool. It autonomously decides *whether* to search, *what* queries to formulate, and *when* it has enough information to stop searching and generate a final answer.
+### 3. Query Decomposition (Pre-processing)
+Raw user questions are often vague or multi-part. Before hitting the search index, I implemented a fast LLM layer (`query_optimizer.py` using `gemini-3.5-flash-lite`) to mathematically decompose complex questions into an array of orthogonal sub-queries. 
 
-### 4. Visual Grounding & S3 Presigned URLs
+### 4. Agentic LLM Orchestration
+Instead of a passive prompt chain, I implemented a **ReAct Agent**. The Gemini model is provided a `search_knowledge_base` tool and the decomposed sub-queries. It autonomously decides *whether* to search, *what* queries to formulate, and *when* it has enough information to stop searching and generate a final answer.
+
+### 5. Visual Grounding & S3 Presigned URLs
 To prevent hallucinations and build trust, the Agent doesn't just cite its sources—it provides visual proof. Using the bounding boxes from the ingestion phase, the system uses PyMuPDF to crop the exact region of the source PDF, uploads it to AWS S3, and returns a time-limited presigned URL directly in the UI.
 
-### 5. Resilient LLM Routing (`llm_router.py`)
+### 6. Resilient LLM Routing (`llm_router.py`)
 To survive rate-limited free-tier APIs in production, I built a custom client router:
 - **Key Rotation**: Hot-swaps between API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`) on `429 Quota Exceeded` errors.
 - **Model Fallback**: Gracefully degrades (e.g., `3.6-flash` → `3.5-flash`) if primary endpoints fail.
@@ -62,6 +65,7 @@ Agentic-RAG/
 ├── agent.py                      # ReAct Agent loop and Tool definitions
 ├── app.py                        # Gradio Web UI with streaming/visual grounding
 ├── llm_router.py                 # Resilient GenAI Client (Rotation, Fallback)
+├── query_optimizer.py            # Pre-processing LLM layer for Query Decomposition
 ├── hybrid_search.py              # BM25 + Vector Search + RRF + Reranker
 ├── gemini_helpers.py             # ChromaDB abstractions
 ├── lambda_helpers.py             # AWS Infrastructure automation (S3, IAM, Lambda)
