@@ -224,6 +224,15 @@ IMPORTANT: When search results include visual grounding information, you MUST in
 
 Always call search_knowledge_base before answering questions about the documents.
 Always cite your sources.
+
+## Self-Correction Protocol
+After each search, critically evaluate the retrieved context BEFORE answering:
+1. **Coverage check:** Does the context address the question? If tangential, try ONE refined query.
+2. **Confidence check:** If evidence is weak or ambiguous, try ONE alternative query with synonyms.
+3. **Completeness check:** For multi-part questions, verify each part has evidence. Search once more for any gap.
+4. **No repetition:** NEVER search for the same concept twice. If two searches on a topic return similar results, the information is likely not in the corpus — accept that and move on.
+5. **Budget:** You have a maximum of 3-4 searches total. After that, answer with what you have.
+6. **Acknowledge limits:** If evidence is missing after a few searches, say so explicitly rather than fabricating an answer.
 {memory_context}"""
 
     return genai_types.GenerateContentConfig(
@@ -245,7 +254,7 @@ def run_agent_turn(
     generation_config,
     tool_map: dict,
     model: str = "models/gemini-3.6-flash",
-    max_iterations: int = 5,
+    max_iterations: int = 7,
     use_decomposition: bool = False,
 ) -> str:
     """
@@ -280,10 +289,41 @@ def run_agent_turn(
     )
 
     for iteration in range(max_iterations):
+        if iteration > 0:
+            logger.info(f"   🔄 Reflection iteration {iteration + 1}/{max_iterations} — agent is refining its search")
+
+        # On the penultimate iteration, nudge the agent to synthesize rather
+        # than searching again. Without this, an overly-reflective agent can
+        # burn all iterations on tool calls and never produce an answer.
+        if iteration == max_iterations - 2:
+            conversation_history.append(
+                genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=(
+                        "[System: You have used most of your search budget. "
+                        "You MUST synthesize your final answer NOW from the evidence "
+                        "you have collected. Do NOT search again. If you lack "
+                        "information for part of the question, state that explicitly.]"
+                    ))]
+                )
+            )
+
+        # On the LAST iteration, remove tools entirely so the model is
+        # physically unable to make another tool call and must generate text.
+        if iteration == max_iterations - 1:
+            forced_config = genai_types.GenerateContentConfig(
+                temperature=generation_config.temperature,
+                max_output_tokens=generation_config.max_output_tokens,
+                system_instruction=generation_config.system_instruction,
+                # No tools — forces text generation
+            )
+        else:
+            forced_config = generation_config
+
         response = gemini_client.models.generate_content(
             model=model,
             contents=conversation_history,
-            config=generation_config,
+            config=forced_config,
         )
 
         candidate = response.candidates[0]

@@ -1,6 +1,6 @@
 # Agentic-RAG: Production-Ready Retrieval with Visual Grounding
 
-> A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Elite Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.
+> A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Elite Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, query decomposition, self-corrective retrieval, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.
 
 ---
 
@@ -31,10 +31,20 @@ Raw user questions are often vague or multi-part. Before hitting the search inde
 ### 4. Agentic LLM Orchestration
 Instead of a passive prompt chain, I implemented a **ReAct Agent**. The Gemini model is provided a `search_knowledge_base` tool and the decomposed sub-queries. It autonomously decides *whether* to search, *what* queries to formulate, and *when* it has enough information to stop searching and generate a final answer.
 
-### 5. Visual Grounding & S3 Presigned URLs
+### 5. Self-Correction / Reflection
+The agent loop runs up to 10 iterations. After each retrieval, the agent evaluates its own context against a 5-point **Self-Correction Protocol** embedded in the system prompt:
+1. **Coverage** — is the retrieved context on-topic?
+2. **Confidence** — is the evidence strong or ambiguous?
+3. **Completeness** — for multi-part questions, is every sub-question answered?
+4. **Answer only when confident** — prefer 2-3 targeted searches over a single weak guess.
+5. **Acknowledge limits** — if evidence is missing after multiple searches, say so explicitly rather than hallucinating.
+
+A synthesis nudge on the penultimate iteration prevents the agent from exhausting all iterations on tool calls without ever answering.
+
+### 6. Visual Grounding & S3 Presigned URLs
 To prevent hallucinations and build trust, the Agent doesn't just cite its sources—it provides visual proof. Using the bounding boxes from the ingestion phase, the system uses PyMuPDF to crop the exact region of the source PDF, uploads it to AWS S3, and returns a time-limited presigned URL directly in the UI.
 
-### 6. Resilient LLM Routing (`llm_router.py`)
+### 7. Resilient LLM Routing (`llm_router.py`)
 To survive rate-limited free-tier APIs in production, I built a custom client router:
 - **Key Rotation**: Hot-swaps between API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`) on `429 Quota Exceeded` errors.
 - **Model Fallback**: Gracefully degrades (e.g., `3.6-flash` → `3.5-flash`) if primary endpoints fail.
@@ -105,4 +115,7 @@ python app.py
 
 # Launch the CLI Agent (Headless)
 python agent.py -q "Explain the self-attention mechanism in Transformers."
+
+# Launch with Query Decomposition + Self-Correction
+python agent.py -q "What is RRF and how does cross-encoder reranking improve it?" --use-decomposition
 ```
