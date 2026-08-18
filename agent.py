@@ -247,6 +247,152 @@ After each search, critically evaluate the retrieved context BEFORE answering:
 
 
 from langsmith import traceable
+from langgraph.graph import StateGraph, START, END
+from typing import TypedDict, Any, List
+
+class AgentState(TypedDict):
+    conversation_history: List[Any]
+    iteration: int
+    max_iterations: int
+    gemini_client: Any
+    generation_config: Any
+    tool_map: dict
+    model: str
+    use_guardrail: bool
+    final_text: str
+
+def build_agent_graph():
+    def call_llm(state: AgentState):
+        iteration = state["iteration"]
+        max_iterations = state["max_iterations"]
+        gemini_client = state["gemini_client"]
+        generation_config = state["generation_config"]
+        conversation_history = state["conversation_history"]
+        model = state["model"]
+        
+        if iteration > 0:
+            logger.info(f"   🔄 Reflection iteration {iteration + 1}/{max_iterations} — agent is refining its search")
+
+        if iteration == max_iterations - 2:
+            conversation_history.append(
+                genai_types.Content(
+                    role="user",
+                    parts=[genai_types.Part(text=(
+                        "[System: You have used most of your search budget. "
+                        "You MUST synthesize your final answer NOW from the evidence "
+                        "you have collected. Do NOT search again. If you lack "
+                        "information for part of the question, state that explicitly.]"
+                    ))]
+                )
+            )
+
+        if iteration == max_iterations - 1:
+            forced_config = genai_types.GenerateContentConfig(
+                temperature=generation_config.temperature,
+                max_output_tokens=generation_config.max_output_tokens,
+                system_instruction=generation_config.system_instruction,
+            )
+        else:
+            forced_config = generation_config
+
+        response = gemini_client.models.generate_content(
+            model=model,
+            contents=conversation_history,
+            config=forced_config,
+        )
+
+        candidate = response.candidates[0]
+        conversation_history.append(candidate.content)
+        
+        return {"conversation_history": conversation_history, "iteration": iteration + 1}
+
+    def execute_tools(state: AgentState):
+        conversation_history = state["conversation_history"]
+        tool_map = state["tool_map"]
+        
+        last_message = conversation_history[-1]
+        tool_calls = [p for p in last_message.parts if hasattr(p, "function_call") and p.function_call]
+        
+        function_responses = []
+        for part in tool_calls:
+            fc = part.function_call
+            tool_name = fc.name
+            tool_args = dict(fc.args) if fc.args else {}
+
+            logger.info(f"   🔧 {tool_name}({', '.join(f'{k}={repr(v)}' for k, v in tool_args.items())})")
+
+            if tool_name in tool_map:
+                tool_result = tool_map[tool_name](**tool_args)
+            else:
+                tool_result = f"Error: Unknown tool '{tool_name}'"
+
+            function_responses.append(
+                genai_types.Part.from_function_response(
+                    name=tool_name,
+                    response={"result": tool_result},
+                )
+            )
+
+        conversation_history.append(
+            genai_types.Content(role="user", parts=function_responses)
+        )
+        return {"conversation_history": conversation_history}
+
+    def run_guardrail(state: AgentState):
+        conversation_history = state["conversation_history"]
+        use_guardrail = state["use_guardrail"]
+        gemini_client = state["gemini_client"]
+        
+        last_message = conversation_history[-1]
+        final_text = "".join(p.text for p in last_message.parts if hasattr(p, "text") and p.text)
+        
+        if use_guardrail:
+            from live_guardrail import check_faithfulness
+            
+            context_chunks = []
+            for content in conversation_history:
+                if content.role == "user":
+                    for part in content.parts:
+                        if hasattr(part, "function_response") and part.function_response:
+                            # In google.genai SDK, function_response is an object with a 'response' dict attribute
+                            res_dict = part.function_response.response if hasattr(part.function_response, "response") else {}
+                            res_text = res_dict.get("result", "") if isinstance(res_dict, dict) else ""
+                            if res_text and "No documents found" not in res_text:
+                                context_chunks.append(res_text)
+                                
+            is_faithful, reason = check_faithfulness(final_text, context_chunks, gemini_client)
+            
+            if not is_faithful:
+                final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {reason})"
+        
+        conversation_history[-1] = genai_types.Content(role="model", parts=[genai_types.Part(text=final_text)])
+        
+        return {"final_text": final_text, "conversation_history": conversation_history}
+
+    def should_continue(state: AgentState):
+        last_message = state["conversation_history"][-1]
+        tool_calls = [p for p in last_message.parts if hasattr(p, "function_call") and p.function_call]
+        
+        if tool_calls:
+            return "execute_tools"
+        return "run_guardrail"
+
+    workflow = StateGraph(AgentState)
+    workflow.add_node("call_llm", call_llm)
+    workflow.add_node("execute_tools", execute_tools)
+    workflow.add_node("run_guardrail", run_guardrail)
+
+    workflow.add_edge(START, "call_llm")
+    workflow.add_conditional_edges("call_llm", should_continue, {
+        "execute_tools": "execute_tools",
+        "run_guardrail": "run_guardrail"
+    })
+    workflow.add_edge("execute_tools", "call_llm")
+    workflow.add_edge("run_guardrail", END)
+
+    return workflow.compile()
+
+COMPILED_AGENT_GRAPH = build_agent_graph()
 
 # ── 6. Agent Loop ─────────────────────────────────────────────────────────────
 @traceable(run_type="chain")
@@ -262,15 +408,7 @@ def run_agent_turn(
     use_guardrail: bool = False,
 ) -> str:
     """
-    Process one user message through the full agent loop.
-
-    The agent may call tools multiple times before returning a final answer.
-    Each iteration either:
-      - executes requested tool calls and loops again, OR
-      - returns the final text response
-
-    Uses types.Content objects (not plain dicts) to avoid pydantic v2
-    validation errors with the google-genai SDK.
+    Process one user message through the LangGraph agent state machine.
     """
     if use_decomposition:
         from query_optimizer import decompose_query
@@ -292,118 +430,29 @@ def run_agent_turn(
         genai_types.Content(role="user", parts=[genai_types.Part(text=injected_message)])
     )
 
-    for iteration in range(max_iterations):
-        if iteration > 0:
-            logger.info(f"   🔄 Reflection iteration {iteration + 1}/{max_iterations} — agent is refining its search")
+    initial_state = {
+        "conversation_history": conversation_history,
+        "iteration": 0,
+        "max_iterations": max_iterations,
+        "gemini_client": gemini_client,
+        "generation_config": generation_config,
+        "tool_map": tool_map,
+        "model": model,
+        "use_guardrail": use_guardrail,
+        "final_text": ""
+    }
 
-        # On the penultimate iteration, nudge the agent to synthesize rather
-        # than searching again. Without this, an overly-reflective agent can
-        # burn all iterations on tool calls and never produce an answer.
-        if iteration == max_iterations - 2:
-            conversation_history.append(
-                genai_types.Content(
-                    role="user",
-                    parts=[genai_types.Part(text=(
-                        "[System: You have used most of your search budget. "
-                        "You MUST synthesize your final answer NOW from the evidence "
-                        "you have collected. Do NOT search again. If you lack "
-                        "information for part of the question, state that explicitly.]"
-                    ))]
-                )
-            )
-
-        # On the LAST iteration, remove tools entirely so the model is
-        # physically unable to make another tool call and must generate text.
-        if iteration == max_iterations - 1:
-            forced_config = genai_types.GenerateContentConfig(
-                temperature=generation_config.temperature,
-                max_output_tokens=generation_config.max_output_tokens,
-                system_instruction=generation_config.system_instruction,
-                # No tools — forces text generation
-            )
-        else:
-            forced_config = generation_config
-
-        response = gemini_client.models.generate_content(
-            model=model,
-            contents=conversation_history,
-            config=forced_config,
+    final_state = COMPILED_AGENT_GRAPH.invoke(initial_state)
+    
+    if not final_state.get("final_text"):
+        fallback_text = "I'm sorry, I was unable to find a complete answer within the allowed number of searches."
+        conversation_history.append(
+            genai_types.Content(role="model", parts=[genai_types.Part(text=fallback_text)])
         )
+        return fallback_text
+        
+    return final_state["final_text"]
 
-        candidate = response.candidates[0]
-        response_parts = candidate.content.parts
-
-        tool_calls = [
-            p for p in response_parts
-            if hasattr(p, "function_call") and p.function_call
-        ]
-
-        if tool_calls:
-            # Add the model's tool-call request to history
-            conversation_history.append(candidate.content)  # already types.Content ✅
-
-            # Execute each requested tool
-            function_responses = []
-            for part in tool_calls:
-                fc = part.function_call
-                tool_name = fc.name
-                tool_args = dict(fc.args) if fc.args else {}
-
-                logger.info(f"   🔧 {tool_name}({', '.join(f'{k}={repr(v)}' for k, v in tool_args.items())})")
-
-                if tool_name in tool_map:
-                    tool_result = tool_map[tool_name](**tool_args)
-                else:
-                    tool_result = f"Error: Unknown tool '{tool_name}'"
-
-                function_responses.append(
-                    genai_types.Part.from_function_response(
-                        name=tool_name,
-                        response={"result": tool_result},
-                    )
-                )
-
-            # Send tool results back to Gemini
-            conversation_history.append(
-                genai_types.Content(role="user", parts=function_responses)
-            )
-
-        else:
-            # Gemini returned a text response — done
-            final_text = "".join(
-                p.text for p in response_parts if hasattr(p, "text") and p.text
-            )
-            
-            # --- Live Faithfulness Guardrail ---
-            if use_guardrail:
-                from live_guardrail import check_faithfulness
-                
-                # Extract all retrieved context from the conversation history
-                context_chunks = []
-                for content in conversation_history:
-                    if content.role == "user":
-                        for part in content.parts:
-                            if hasattr(part, "function_response") and part.function_response:
-                                res_text = part.function_response.get("response", {}).get("result", "")
-                                if res_text and "No documents found" not in res_text:
-                                    context_chunks.append(res_text)
-                                    
-                is_faithful, reason = check_faithfulness(final_text, context_chunks, gemini_client)
-                
-                if not is_faithful:
-                    final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {reason})"
-
-            conversation_history.append(
-                genai_types.Content(role="model", parts=[genai_types.Part(text=final_text)])
-            )
-            return final_text
-            
-    # If the loop exhausts max_iterations without a final text response
-    fallback_text = "I'm sorry, I was unable to find a complete answer within the allowed number of searches."
-    conversation_history.append(
-        genai_types.Content(role="model", parts=[genai_types.Part(text=fallback_text)])
-    )
-    return fallback_text
 
 
 # ── 7. Chat Loop ──────────────────────────────────────────────────────────────

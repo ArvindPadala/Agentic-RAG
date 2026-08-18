@@ -28,8 +28,8 @@ I abandoned single-path vector retrieval. My `hybrid_search.py` implements a 3-s
 ### 3. Query Decomposition (Pre-processing)
 Raw user questions are often vague or multi-part. Before hitting the search index, I implemented a fast LLM layer (`query_optimizer.py` using `gemini-3.5-flash-lite`) to mathematically decompose complex questions into an array of orthogonal sub-queries. 
 
-### 4. Agentic LLM Orchestration
-Instead of a passive prompt chain, I implemented a **ReAct Agent**. The Gemini model is provided a `search_knowledge_base` tool and the decomposed sub-queries. It autonomously decides *whether* to search, *what* queries to formulate, and *when* it has enough information to stop searching and generate a final answer.
+### 4. Enterprise Orchestration (LangGraph)
+Instead of a passive prompt chain or a fragile `while` loop, the core ReAct Agent is orchestrated using a **LangGraph StateGraph**. The Gemini model is provided a `search_knowledge_base` tool and the decomposed sub-queries. The state machine autonomously decides *whether* to search, *what* queries to formulate, and routes between nodes (`call_llm`, `execute_tools`, `run_guardrail`) until it has enough information to generate a final answer.
 
 ### 5. Self-Correction / Reflection
 The agent loop runs up to 10 iterations. After each retrieval, the agent evaluates its own context against a 5-point **Self-Correction Protocol** embedded in the system prompt:
@@ -75,7 +75,7 @@ For generation metrics, I evaluate a sliced smoke-test subset via **Ragas** usin
 
 ```text
 Agentic-RAG/
-├── agent.py                      # ReAct Agent loop and Tool definitions
+├── agent.py                      # LangGraph StateGraph, Nodes, and Tool definitions
 ├── app.py                        # Gradio Web UI with streaming/visual grounding
 ├── llm_router.py                 # Resilient GenAI Client (Rotation, Fallback)
 ├── live_guardrail.py             # Runtime LLM-as-a-judge Faithfulness Interceptor
