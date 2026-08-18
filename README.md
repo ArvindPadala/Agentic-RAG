@@ -1,6 +1,6 @@
 # Agentic-RAG: Production-Ready Retrieval with Visual Grounding
 
-> A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Elite Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, query decomposition, self-corrective retrieval, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.
+> A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Elite Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, query decomposition, self-corrective retrieval, a live faithfulness guardrail, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.
 
 ---
 
@@ -50,6 +50,9 @@ To survive rate-limited free-tier APIs in production, I built a custom client ro
 - **Model Fallback**: Gracefully degrades (e.g., `3.6-flash` → `3.5-flash`) if primary endpoints fail.
 - **Exponential Backoff**: Jittered retry loops to survive `503` service drops.
 
+### 8. Live Faithfulness Guardrail & Strict Boundary
+To close the loop between offline evaluation and runtime safety, the agent enforces a **Strict Boundary**: if a user asks an out-of-domain question (like basic math or chitchat), the agent gracefully refuses rather than hallucinating from pre-trained knowledge. As a final interceptor, a fast LLM-as-a-judge (`live_guardrail.py`) evaluates the generated response against the retrieved context to detect hallucinations. If an ungrounded claim slips through, a prominent UI warning is appended to the answer.
+
 ---
 
 ## 📊 Evaluation & Metrics (The Proof)
@@ -75,6 +78,7 @@ Agentic-RAG/
 ├── agent.py                      # ReAct Agent loop and Tool definitions
 ├── app.py                        # Gradio Web UI with streaming/visual grounding
 ├── llm_router.py                 # Resilient GenAI Client (Rotation, Fallback)
+├── live_guardrail.py             # Runtime LLM-as-a-judge Faithfulness Interceptor
 ├── query_optimizer.py            # Pre-processing LLM layer for Query Decomposition
 ├── hybrid_search.py              # BM25 + Vector Search + RRF + Reranker
 ├── gemini_helpers.py             # ChromaDB abstractions
@@ -118,4 +122,7 @@ python agent.py -q "Explain the self-attention mechanism in Transformers."
 
 # Launch with Query Decomposition + Self-Correction
 python agent.py -q "What is RRF and how does cross-encoder reranking improve it?" --use-decomposition
+
+# Test the Live Faithfulness Guardrail with a hallucination-inducing prompt
+python agent.py -q "What is the capital of France?" --use-guardrail
 ```

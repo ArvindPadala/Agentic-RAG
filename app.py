@@ -166,7 +166,7 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
     (The old [[user, bot], ...] tuple format causes 'data incompatible with keys'.)
     """
     def chat(user_message: str, history: list, conversation_history: list,
-             search_type: str, use_decomposition: bool):
+             search_type: str, use_decomposition: bool, use_guardrail: bool):
         if not user_message.strip():
             return history, conversation_history, [], format_memory_status(memory)
 
@@ -205,6 +205,7 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
                 tool_map=tool_map,
                 model=model_id,
                 use_decomposition=use_decomposition,
+                use_guardrail=use_guardrail,
             )
         except Exception as e:
             if is_rate_limit_error(e):
@@ -275,6 +276,7 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
         conv_state    = gr.State([])
         search_state  = gr.State(DEFAULT_SEARCH_LABEL)   # tracks selected retrieval engine
         decomp_state  = gr.State(False)
+        guardrail_state = gr.State(False)
 
         # ── Header ────────────────────────────────────────────────────────
         with gr.Row(elem_id="header"):
@@ -300,7 +302,12 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
                 decomp_toggle = gr.Checkbox(
                     label="☑️ Enable Query Decomposition (Pre-processing)",
                     value=False,
-                    info="Breaks complex queries into focused sub-queries before searching."
+                    info="Use a fast LLM to break down complex multi-part questions into specific sub-queries before searching."
+                )
+                guardrail_toggle = gr.Checkbox(
+                    label="🛡️ Enable Live Faithfulness Guardrail",
+                    value=False,
+                    info="Runs an LLM-as-a-judge on the final answer to warn if it hallucinated facts not in the retrieved documents."
                 )
 
         # ── Main layout ────────────────────────────────────────────────
@@ -374,8 +381,8 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        def submit(message, history, conv_history, search_type, use_decomp):
-            return chat_fn(message, history, conv_history, search_type, use_decomp)
+        def submit(message, history, conv_history, search_type, use_decomp, use_guardrail):
+            return chat_fn(message, history, conv_history, search_type, use_decomp, use_guardrail)
 
         # Sync toggle → search state
         search_type_toggle.change(
@@ -390,11 +397,18 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
             inputs=decomp_toggle,
             outputs=decomp_state,
         )
+        
+        # Sync guardrail toggle -> guardrail state
+        guardrail_toggle.change(
+            fn=lambda val: val,
+            inputs=guardrail_toggle,
+            outputs=guardrail_state,
+        )
 
         # Send on button click
         send_btn.click(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state],
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         ).then(
             fn=lambda: gr.update(value=""),
@@ -404,7 +418,7 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
         # Send on Enter key
         user_input.submit(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state],
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         ).then(
             fn=lambda: gr.update(value=""),

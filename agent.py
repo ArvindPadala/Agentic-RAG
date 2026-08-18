@@ -225,6 +225,9 @@ IMPORTANT: When search results include visual grounding information, you MUST in
 Always call search_knowledge_base before answering questions about the documents.
 Always cite your sources.
 
+## STRICT BOUNDARY ENFORCEMENT
+You are a strict document assistant. If the provided context does not contain the answer, or if the user asks a question entirely unrelated to the knowledge base (like basic math or chitchat), DO NOT use your internal knowledge. Politely explain that you can only answer questions based on the retrieved documents.
+
 ## Self-Correction Protocol
 After each search, critically evaluate the retrieved context BEFORE answering:
 1. **Coverage check:** Does the context address the question? If tangential, try ONE refined query.
@@ -256,6 +259,7 @@ def run_agent_turn(
     model: str = "models/gemini-3.6-flash",
     max_iterations: int = 7,
     use_decomposition: bool = False,
+    use_guardrail: bool = False,
 ) -> str:
     """
     Process one user message through the full agent loop.
@@ -369,6 +373,26 @@ def run_agent_turn(
             final_text = "".join(
                 p.text for p in response_parts if hasattr(p, "text") and p.text
             )
+            
+            # --- Live Faithfulness Guardrail ---
+            if use_guardrail:
+                from live_guardrail import check_faithfulness
+                
+                # Extract all retrieved context from the conversation history
+                context_chunks = []
+                for content in conversation_history:
+                    if content.role == "user":
+                        for part in content.parts:
+                            if hasattr(part, "function_response") and part.function_response:
+                                res_text = part.function_response.get("response", {}).get("result", "")
+                                if res_text and "No documents found" not in res_text:
+                                    context_chunks.append(res_text)
+                                    
+                is_faithful, reason = check_faithfulness(final_text, context_chunks, gemini_client)
+                
+                if not is_faithful:
+                    final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {reason})"
+
             conversation_history.append(
                 genai_types.Content(role="model", parts=[genai_types.Part(text=final_text)])
             )
@@ -384,7 +408,8 @@ def run_agent_turn(
 
 # ── 7. Chat Loop ──────────────────────────────────────────────────────────────
 def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
-             model: str, memory_file: str, use_decomposition: bool = False):
+             model: str, memory_file: str, use_decomposition: bool = False,
+             use_guardrail: bool = False):
     """Run the interactive chat loop."""
     conversation_history = []  # Fresh history every session
     conversation_num = 0
@@ -421,7 +446,7 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
             logger.info(f"{'─' * 70}")
             logger.info("\nAgent Response (processing...)\n")
 
-            result = run_agent_turn(
+            response_text = run_agent_turn(
                 user_message=user_input,
                 conversation_history=conversation_history,
                 gemini_client=gemini_client,
@@ -429,8 +454,9 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
                 tool_map=tool_map,
                 model=model,
                 use_decomposition=use_decomposition,
+                use_guardrail=use_guardrail
             )
-            logger.info(result)
+            logger.info(response_text)
             logger.info(f"\n{'=' * 70}")
 
         except KeyboardInterrupt:
@@ -449,7 +475,7 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
 
 # ── 8. Single-question Mode ───────────────────────────────────────────────────
 def ask_single_question(question: str, gemini_client, generation_config,
-                         tool_map: dict, model: str, use_decomposition: bool = False) -> str:
+                         tool_map: dict, model: str, use_decomposition: bool = False, use_guardrail: bool = False) -> str:
     """Answer one question and return the result (no interactive loop)."""
     conversation_history = []
     logger.info(f"\n🔍 Question: {question}\n")
@@ -461,6 +487,7 @@ def ask_single_question(question: str, gemini_client, generation_config,
         tool_map=tool_map,
         model=model,
         use_decomposition=use_decomposition,
+        use_guardrail=use_guardrail
     )
     return answer
 
@@ -500,11 +527,8 @@ def main():
         default="models/gemini-2.5-flash",
         help="Gemini model to use (default: models/gemini-2.5-flash)",
     )
-    parser.add_argument(
-        "--use-decomposition",
-        action="store_true",
-        help="Enable Query Decomposition pre-processing (default: False)",
-    )
+    parser.add_argument("--use-decomposition", action="store_true", help="Enable Query Decomposition pre-processing")
+    parser.add_argument("--use-guardrail", action="store_true", help="Enable Live Faithfulness Guardrail post-processing")
     args = parser.parse_args()
 
     logger.info("\n🚀 Starting Medical Agent...")
@@ -548,6 +572,7 @@ def main():
             tool_map=tool_map,
             model=args.model,
             use_decomposition=args.use_decomposition,
+            use_guardrail=args.use_guardrail
         )
         logger.info(f"\nAnswer:\n{answer}")
     else:
@@ -560,6 +585,7 @@ def main():
             model=args.model,
             memory_file=args.memory_file,
             use_decomposition=args.use_decomposition,
+            use_guardrail=args.use_guardrail
         )
 
 
