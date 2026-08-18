@@ -31,15 +31,10 @@ Raw user questions are often vague or multi-part. Before hitting the search inde
 ### 4. Enterprise Orchestration (LangGraph)
 Instead of a passive prompt chain or a fragile `while` loop, the core ReAct Agent is orchestrated using a **LangGraph StateGraph**. The Gemini model is provided a `search_knowledge_base` tool and the decomposed sub-queries. The state machine autonomously decides *whether* to search, *what* queries to formulate, and routes between nodes (`call_llm`, `execute_tools`, `run_guardrail`) until it has enough information to generate a final answer.
 
-### 5. Self-Correction / Reflection
-The agent loop runs up to 10 iterations. After each retrieval, the agent evaluates its own context against a 5-point **Self-Correction Protocol** embedded in the system prompt:
-1. **Coverage** — is the retrieved context on-topic?
-2. **Confidence** — is the evidence strong or ambiguous?
-3. **Completeness** — for multi-part questions, is every sub-question answered?
-4. **Answer only when confident** — prefer 2-3 targeted searches over a single weak guess.
-5. **Acknowledge limits** — if evidence is missing after multiple searches, say so explicitly rather than hallucinating.
-
-A synthesis nudge on the penultimate iteration prevents the agent from exhausting all iterations on tool calls without ever answering.
+### 5. Self-Correction & Parallel Execution
+The agent loop runs up to 10 iterations. After each retrieval, the agent evaluates its own context against a 5-point **Self-Correction Protocol** embedded in the system prompt.
+If the agent requests multiple tools at once (e.g., following Query Decomposition), the LangGraph `execute_tools` node uses a `ThreadPoolExecutor` to run the I/O-heavy ChromaDB/S3 searches concurrently, drastically reducing latency.
+A synthesis nudge on the penultimate iteration prevents the agent from exhausting all iterations on tool calls.
 
 ### 6. Visual Grounding & S3 Presigned URLs
 To prevent hallucinations and build trust, the Agent doesn't just cite its sources—it provides visual proof. Using the bounding boxes from the ingestion phase, the system uses PyMuPDF to crop the exact region of the source PDF, uploads it to AWS S3, and returns a time-limited presigned URL directly in the UI.

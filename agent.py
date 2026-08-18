@@ -249,6 +249,7 @@ After each search, critically evaluate the retrieved context BEFORE answering:
 from langsmith import traceable
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Any, List
+import concurrent.futures
 
 class AgentState(TypedDict):
     conversation_history: List[Any]
@@ -314,7 +315,8 @@ def build_agent_graph():
         tool_calls = [p for p in last_message.parts if hasattr(p, "function_call") and p.function_call]
         
         function_responses = []
-        for part in tool_calls:
+
+        def execute_single_tool(part):
             fc = part.function_call
             tool_name = fc.name
             tool_args = dict(fc.args) if fc.args else {}
@@ -322,16 +324,23 @@ def build_agent_graph():
             logger.info(f"   🔧 {tool_name}({', '.join(f'{k}={repr(v)}' for k, v in tool_args.items())})")
 
             if tool_name in tool_map:
-                tool_result = tool_map[tool_name](**tool_args)
+                try:
+                    tool_result = tool_map[tool_name](**tool_args)
+                except Exception as e:
+                    logger.error(f"Error executing {tool_name}: {e}")
+                    tool_result = f"Error: {e}"
             else:
                 tool_result = f"Error: Unknown tool '{tool_name}'"
 
-            function_responses.append(
-                genai_types.Part.from_function_response(
-                    name=tool_name,
-                    response={"result": tool_result},
-                )
+            return genai_types.Part.from_function_response(
+                name=tool_name,
+                response={"result": tool_result},
             )
+
+        # Run tool calls in parallel using a thread pool
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            # Map returns results in the same order
+            function_responses = list(executor.map(execute_single_tool, tool_calls))
 
         conversation_history.append(
             genai_types.Content(role="user", parts=function_responses)
