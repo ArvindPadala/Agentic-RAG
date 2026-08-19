@@ -16,18 +16,12 @@ Prerequisites (already done if you ran the notebook):
     - memory.json (created automatically on first exit)
 """
 
-import json
-import argparse
-from datetime import datetime
-
-from config import settings
-from utils.logger import get_logger
-
-logger = get_logger('agent')
-
-from google import genai
-from google.genai import types as genai_types
-
+import concurrent.futures
+from typing import TypedDict, Any, List
+from langgraph.graph import StateGraph, START, END
+from langsmith import traceable
+from llm_router import GeminiRouter
+from visual_grounding_helper import extract_chunk_image
 from gemini_helpers import (
     init_chroma_collection,
     search_chroma,
@@ -36,14 +30,19 @@ from gemini_helpers import (
     format_memory_for_prompt,
     update_memory_from_conversation,
 )
-from visual_grounding_helper import extract_chunk_image
+from google.genai import types as genai_types
+import argparse
+from datetime import datetime
+
+from config import settings
+from utils.logger import get_logger
+
+logger = get_logger('agent')
 
 
-# ── 1. Environment ────────────────────────────────────────────────────────────
+# ── 1. Environment ──────────────────────────────────────────────────────
 # Environment is now loaded securely via config.py
 
-
-from llm_router import GeminiRouter
 
 def create_gemini_router(api_keys: list) -> GeminiRouter:
     """Create and validate the robust Gemini router."""
@@ -65,8 +64,9 @@ def create_s3_client():
     return client
 
 
-# ── 3. ChromaDB ───────────────────────────────────────────────────────────────
-def load_chroma_collection(collection_name: str, chroma_path: str = "./chroma_db"):
+# ── 3. ChromaDB ─────────────────────────────────────────────────────────
+def load_chroma_collection(collection_name: str,
+                           chroma_path: str = "./chroma_db"):
     """Open the existing ChromaDB collection from disk."""
     collection = init_chroma_collection(
         persist_directory=chroma_path,
@@ -75,14 +75,16 @@ def load_chroma_collection(collection_name: str, chroma_path: str = "./chroma_db
     count = collection.count()
     if count == 0:
         logger.info(f"⚠️  Collection '{collection_name}' is empty.")
-        logger.info("   Run the notebook Steps 9a–9b first to index your documents.")
+        logger.info(
+            "   Run the notebook Steps 9a–9b first to index your documents.")
     else:
         logger.info(f"✅ ChromaDB ready — {count} chunks indexed")
     return collection
 
 
-# ── 4. Search Tool ────────────────────────────────────────────────────────────
-def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hybrid: bool = False, use_reranker: bool = False):
+# ── 4. Search Tool ──────────────────────────────────────────────────────
+def build_search_tool(collection, gemini_client, s3_client, bucket: str,
+                      use_hybrid: bool = False, use_reranker: bool = False):
     """
     Build the search_knowledge_base function that the Gemini agent will call.
 
@@ -120,13 +122,13 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hyb
         seen_chunk_ids = set()
 
         for result in results:
-            chunk_id   = result["chunk_id"]
+            chunk_id = result["chunk_id"]
             source_doc = result["source_document"]
-            score      = result["score"]
-            page       = result["page"]
+            score = result["score"]
+            page = result["page"]
             chunk_type = result["chunk_type"]
-            bbox       = result["bbox"]
-            content    = result["text"]
+            bbox = result["bbox"]
+            content = result["text"]
 
             if chunk_id in seen_chunk_ids:
                 continue
@@ -142,7 +144,8 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hyb
 
                 for source_pdf_key in possible_keys:
                     try:
-                        s3_client.head_object(Bucket=bucket, Key=source_pdf_key)
+                        s3_client.head_object(
+                            Bucket=bucket, Key=source_pdf_key)
                         cropped_image_url = extract_chunk_image(
                             s3_client=s3_client,
                             bucket=bucket,
@@ -157,7 +160,6 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hyb
                         break  # Found and processed successfully
                     except Exception:
                         continue  # Try the next prefix
-
 
             if cropped_image_url:
                 result_text = (
@@ -204,8 +206,9 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str, use_hyb
     return search_knowledge_base, tool
 
 
-# ── 5. Agent Config ───────────────────────────────────────────────────────────
-def build_agent_config(search_tool, memory: dict) -> genai_types.GenerateContentConfig:
+# ── 5. Agent Config ─────────────────────────────────────────────────────
+def build_agent_config(
+        search_tool, memory: dict) -> genai_types.GenerateContentConfig:
     """Build the GenerateContentConfig with system prompt and tools."""
     memory_context = format_memory_for_prompt(memory)
 
@@ -246,11 +249,6 @@ After each search, critically evaluate the retrieved context BEFORE answering:
     )
 
 
-from langsmith import traceable
-from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, Any, List
-import concurrent.futures
-
 class AgentState(TypedDict):
     conversation_history: List[Any]
     iteration: int
@@ -262,6 +260,7 @@ class AgentState(TypedDict):
     use_guardrail: bool
     final_text: str
 
+
 def build_agent_graph():
     def call_llm(state: AgentState):
         iteration = state["iteration"]
@@ -270,9 +269,11 @@ def build_agent_graph():
         generation_config = state["generation_config"]
         conversation_history = state["conversation_history"]
         model = state["model"]
-        
+
         if iteration > 0:
-            logger.info(f"   🔄 Reflection iteration {iteration + 1}/{max_iterations} — agent is refining its search")
+            logger.info(
+                f"   🔄 Reflection iteration {
+                    iteration + 1}/{max_iterations} — agent is refining its search")
 
         if iteration == max_iterations - 2:
             conversation_history.append(
@@ -304,16 +305,19 @@ def build_agent_graph():
 
         candidate = response.candidates[0]
         conversation_history.append(candidate.content)
-        
-        return {"conversation_history": conversation_history, "iteration": iteration + 1}
+
+        return {"conversation_history": conversation_history,
+                "iteration": iteration + 1}
 
     def execute_tools(state: AgentState):
         conversation_history = state["conversation_history"]
         tool_map = state["tool_map"]
-        
+
         last_message = conversation_history[-1]
-        tool_calls = [p for p in last_message.parts if hasattr(p, "function_call") and p.function_call]
-        
+        tool_calls = [
+            p for p in last_message.parts if hasattr(
+                p, "function_call") and p.function_call]
+
         function_responses = []
 
         def execute_single_tool(part):
@@ -321,7 +325,8 @@ def build_agent_graph():
             tool_name = fc.name
             tool_args = dict(fc.args) if fc.args else {}
 
-            logger.info(f"   🔧 {tool_name}({', '.join(f'{k}={repr(v)}' for k, v in tool_args.items())})")
+            logger.info(f"   🔧 {tool_name}({', '.join(
+                f'{k}={repr(v)}' for k, v in tool_args.items())})")
 
             if tool_name in tool_map:
                 try:
@@ -340,7 +345,10 @@ def build_agent_graph():
         # Run tool calls in parallel using a thread pool
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             # Map returns results in the same order
-            function_responses = list(executor.map(execute_single_tool, tool_calls))
+            function_responses = list(
+                executor.map(
+                    execute_single_tool,
+                    tool_calls))
 
         conversation_history.append(
             genai_types.Content(role="user", parts=function_responses)
@@ -351,37 +359,50 @@ def build_agent_graph():
         conversation_history = state["conversation_history"]
         use_guardrail = state["use_guardrail"]
         gemini_client = state["gemini_client"]
-        
+
         last_message = conversation_history[-1]
-        final_text = "".join(p.text for p in last_message.parts if hasattr(p, "text") and p.text)
-        
+        final_text = "".join(
+            p.text for p in last_message.parts if hasattr(
+                p, "text") and p.text)
+
         if use_guardrail:
             from live_guardrail import check_faithfulness
-            
+
             context_chunks = []
             for content in conversation_history:
                 if content.role == "user":
                     for part in content.parts:
-                        if hasattr(part, "function_response") and part.function_response:
-                            # In google.genai SDK, function_response is an object with a 'response' dict attribute
-                            res_dict = part.function_response.response if hasattr(part.function_response, "response") else {}
-                            res_text = res_dict.get("result", "") if isinstance(res_dict, dict) else ""
+                        if hasattr(
+                                part, "function_response") and part.function_response:
+                            # In google.genai SDK, function_response is an
+                            # object with a 'response' dict attribute
+                            res_dict = part.function_response.response if hasattr(
+                                part.function_response, "response") else {}
+                            res_text = res_dict.get(
+                                "result", "") if isinstance(
+                                res_dict, dict) else ""
                             if res_text and "No documents found" not in res_text:
                                 context_chunks.append(res_text)
-                                
-            is_faithful, reason = check_faithfulness(final_text, context_chunks, gemini_client)
-            
+
+            is_faithful, reason = check_faithfulness(
+                final_text, context_chunks, gemini_client)
+
             if not is_faithful:
-                final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {reason})"
-        
-        conversation_history[-1] = genai_types.Content(role="model", parts=[genai_types.Part(text=final_text)])
-        
-        return {"final_text": final_text, "conversation_history": conversation_history}
+                final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {
+                    reason})"
+
+        conversation_history[-1] = genai_types.Content(
+            role="model", parts=[genai_types.Part(text=final_text)])
+
+        return {"final_text": final_text,
+                "conversation_history": conversation_history}
 
     def should_continue(state: AgentState):
         last_message = state["conversation_history"][-1]
-        tool_calls = [p for p in last_message.parts if hasattr(p, "function_call") and p.function_call]
-        
+        tool_calls = [
+            p for p in last_message.parts if hasattr(
+                p, "function_call") and p.function_call]
+
         if tool_calls:
             return "execute_tools"
         return "run_guardrail"
@@ -401,9 +422,12 @@ def build_agent_graph():
 
     return workflow.compile()
 
+
 COMPILED_AGENT_GRAPH = build_agent_graph()
 
-# ── 6. Agent Loop ─────────────────────────────────────────────────────────────
+# ── 6. Agent Loop ───────────────────────────────────────────────────────
+
+
 @traceable(run_type="chain")
 def run_agent_turn(
     user_message: str,
@@ -422,7 +446,8 @@ def run_agent_turn(
     if use_decomposition:
         from query_optimizer import decompose_query
         sub_queries = decompose_query(user_message, gemini_client)
-        if len(sub_queries) > 1 or (len(sub_queries) == 1 and sub_queries[0] != user_message):
+        if len(sub_queries) > 1 or (len(sub_queries) ==
+                                    1 and sub_queries[0] != user_message):
             formatted_queries = "\n".join([f"- {q}" for q in sub_queries])
             injected_message = (
                 f"User Question: {user_message}\n\n"
@@ -436,7 +461,10 @@ def run_agent_turn(
 
     # Add user's message to history
     conversation_history.append(
-        genai_types.Content(role="user", parts=[genai_types.Part(text=injected_message)])
+        genai_types.Content(
+            role="user", parts=[
+                genai_types.Part(
+                    text=injected_message)])
     )
 
     initial_state = {
@@ -452,19 +480,21 @@ def run_agent_turn(
     }
 
     final_state = COMPILED_AGENT_GRAPH.invoke(initial_state)
-    
+
     if not final_state.get("final_text"):
         fallback_text = "I'm sorry, I was unable to find a complete answer within the allowed number of searches."
         conversation_history.append(
-            genai_types.Content(role="model", parts=[genai_types.Part(text=fallback_text)])
+            genai_types.Content(
+                role="model", parts=[
+                    genai_types.Part(
+                        text=fallback_text)])
         )
         return fallback_text
-        
+
     return final_state["final_text"]
 
 
-
-# ── 7. Chat Loop ──────────────────────────────────────────────────────────────
+# ── 7. Chat Loop ────────────────────────────────────────────────────────
 def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
              model: str, memory_file: str, use_decomposition: bool = False,
              use_guardrail: bool = False):
@@ -473,7 +503,8 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
     conversation_num = 0
 
     logger.info("=" * 70)
-    logger.info("  Document Agent — Interactive Chat with Visual Grounding (Gemini)")
+    logger.info(
+        "  Document Agent — Interactive Chat with Visual Grounding (Gemini)")
     logger.info("=" * 70)
     logger.info("  Ask questions about your documents.")
     logger.info("  Type 'exit' to end (memory will be saved).")
@@ -494,12 +525,15 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
                     gemini_client=gemini_client,
                 )
                 save_memory(updated_memory, memory_file)
-                logger.info("👋 Goodbye! (Memory saved — I'll remember this next time)")
+                logger.info(
+                    "👋 Goodbye! (Memory saved — I'll remember this next time)")
                 break
 
             conversation_num += 1
             logger.info(f"\n{'─' * 70}")
-            logger.info(f"Question #{conversation_num} [{datetime.now().strftime('%H:%M:%S')}]")
+            logger.info(
+                f"Question #{conversation_num} [{
+                    datetime.now().strftime('%H:%M:%S')}]")
             logger.info(f"  \"{user_input}\"")
             logger.info(f"{'─' * 70}")
             logger.info("\nAgent Response (processing...)\n")
@@ -531,9 +565,9 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
             logger.info("   Please try again or type 'exit' to quit.")
 
 
-# ── 8. Single-question Mode ───────────────────────────────────────────────────
+# ── 8. Single-question Mode ─────────────────────────────────────────────
 def ask_single_question(question: str, gemini_client, generation_config,
-                         tool_map: dict, model: str, use_decomposition: bool = False, use_guardrail: bool = False) -> str:
+                        tool_map: dict, model: str, use_decomposition: bool = False, use_guardrail: bool = False) -> str:
     """Answer one question and return the result (no interactive loop)."""
     conversation_history = []
     logger.info(f"\n🔍 Question: {question}\n")
@@ -550,7 +584,7 @@ def ask_single_question(question: str, gemini_client, generation_config,
     return answer
 
 
-# ── 9. Main ───────────────────────────────────────────────────────────────────
+# ── 9. Main ─────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
         description="Medical Document Chatbot powered by Gemini + ChromaDB"
@@ -585,8 +619,14 @@ def main():
         default="models/gemini-2.5-flash",
         help="Gemini model to use (default: models/gemini-2.5-flash)",
     )
-    parser.add_argument("--use-decomposition", action="store_true", help="Enable Query Decomposition pre-processing")
-    parser.add_argument("--use-guardrail", action="store_true", help="Enable Live Faithfulness Guardrail post-processing")
+    parser.add_argument(
+        "--use-decomposition",
+        action="store_true",
+        help="Enable Query Decomposition pre-processing")
+    parser.add_argument(
+        "--use-guardrail",
+        action="store_true",
+        help="Enable Live Faithfulness Guardrail post-processing")
     args = parser.parse_args()
 
     logger.info("\n🚀 Starting Medical Agent...")

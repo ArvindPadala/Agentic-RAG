@@ -1,13 +1,17 @@
+from config import settings
+from llm_router import GeminiRouter
+from gemini_helpers import init_chroma_collection
+from agent import run_agent_turn, build_search_tool, create_s3_client, build_agent_config
 import os
 import sys
 import pandas as pd
-import google.genai as genai
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from agent import run_agent_turn, build_search_tool, create_s3_client, build_agent_config
-from gemini_helpers import init_chroma_collection
-from llm_router import GeminiRouter
-from config import settings
+sys.path.insert(
+    0,
+    os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            '..')))
 
 
 def main():
@@ -20,7 +24,8 @@ def main():
     gemini_client = GeminiRouter(api_keys=settings.GEMINI_API_KEYS)
     s3 = create_s3_client()
     coll = init_chroma_collection("./chroma_db", "document_chunks")
-    search_fn, search_tool = build_search_tool(coll, gemini_client, s3, settings.S3_BUCKET_NAME, use_hybrid=True)
+    search_fn, search_tool = build_search_tool(
+        coll, gemini_client, s3, settings.S3_BUCKET_NAME, use_hybrid=True)
     config = build_agent_config(search_tool, {})
 
     answers = []
@@ -28,11 +33,12 @@ def main():
     print("Generating answers for Golden Dataset...")
     for i, row in df.iterrows():
         question = row["question"]
-        print(f"[{i+1}/{len(df)}] Q: {question[:50]}...")
+        print(f"[{i + 1}/{len(df)}] Q: {question[:50]}...")
         try:
             # We run the agent turn. The agent will retrieve and generate.
             # RAGAS needs `answer` and ideally the specific `contexts` retrieved.
-            # For simplicity in this script, we'll just evaluate the end-to-end generation.
+            # For simplicity in this script, we'll just evaluate the end-to-end
+            # generation.
             response = run_agent_turn(
                 user_message=question,
                 conversation_history=[],
@@ -51,7 +57,8 @@ def main():
     # Normally, here we would use ragas.evaluate(Dataset.from_pandas(df), metrics=[...])
     # However, setting up the exact LangChain wrapper for Ragas with the new google-genai SDK
     # can be verbose. This script establishes the evaluation generation loop.
-    # In a full production setup, the LangSmith tracer would intercept the RAGAS calls.
+    # In a full production setup, the LangSmith tracer would intercept the
+    # RAGAS calls.
 
     df.to_csv("eval/hybrid_results.csv", index=False)
     print("Saved hybrid answers to eval/hybrid_results.csv")

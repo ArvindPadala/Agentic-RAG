@@ -69,7 +69,8 @@ def init_chroma_collection(
 
     count = collection.count()
     if count > 0:
-        logger.info(f"✅ Reopened existing collection '{collection_name}' ({count} documents already indexed)")
+        logger.info(f"✅ Reopened existing collection '{
+                    collection_name}' ({count} documents already indexed)")
     else:
         logger.info(f"✅ Created new empty collection '{collection_name}'")
 
@@ -128,7 +129,8 @@ def load_chunks_from_s3(
 
             try:
                 response = s3_client.get_object(Bucket=bucket, Key=key)
-                chunk_data = json.loads(response["Body"].read().decode("utf-8"))
+                chunk_data = json.loads(
+                    response["Body"].read().decode("utf-8"))
                 chunk_data["s3_key"] = key  # Remember where it came from
                 chunks.append(chunk_data)
             except Exception as e:
@@ -184,7 +186,8 @@ def embed_and_index_chunks(
         Number of new chunks indexed
     """
     logger.info(f"\n📦 Preparing to index {len(chunks)} chunks...")
-    logger.info("   Using: sentence-transformers/all-MiniLM-L6-v2 (local, free, no rate limits)")
+    logger.info(
+        "   Using: sentence-transformers/all-MiniLM-L6-v2 (local, free, no rate limits)")
 
     # Filter out chunks with no text
     valid_chunks = [c for c in chunks if c.get("text", "").strip()]
@@ -192,8 +195,15 @@ def embed_and_index_chunks(
 
     if skip_existing:
         existing_ids = set(collection.get()["ids"])
-        new_chunks = [c for c in valid_chunks if c.get("chunk_id", "") not in existing_ids]
-        logger.info(f"   └─ {len(new_chunks)} new chunks to add (skipping {len(valid_chunks) - len(new_chunks)} already indexed)")
+        new_chunks = [
+            c for c in valid_chunks if c.get(
+                "chunk_id",
+                "") not in existing_ids]
+        logger.info(
+            f"   └─ {
+                len(new_chunks)} new chunks to add (skipping {
+                len(valid_chunks) -
+                len(new_chunks)} already indexed)")
     else:
         new_chunks = valid_chunks
 
@@ -209,15 +219,17 @@ def embed_and_index_chunks(
         ids.append(chunk.get("chunk_id", ""))
         bbox = chunk.get("bbox", [0, 0, 1, 1])
         metadatas.append({
-            "chunk_type":      chunk.get("chunk_type", "text"),
-            "page":            int(chunk.get("page", 0)),
-            "bbox":            json.dumps(bbox),
+            "chunk_type": chunk.get("chunk_type", "text"),
+            "page": int(chunk.get("page", 0)),
+            "bbox": json.dumps(bbox),
             "source_document": chunk.get("source_document", ""),
-            "s3_key":          chunk.get("s3_key", "")
+            "s3_key": chunk.get("s3_key", "")
         })
 
     # Add to ChromaDB — NO embeddings= arg → ChromaDB auto-embeds locally
-    logger.info(f"\n🧠 Embedding {len(new_chunks)} chunks locally (no API call)...")
+    logger.info(
+        f"\n🧠 Embedding {
+            len(new_chunks)} chunks locally (no API call)...")
     collection.add(
         ids=ids,
         documents=texts,   # ChromaDB embeds these automatically
@@ -262,7 +274,8 @@ def search_chroma(
     Returns:
         List of result dicts with: text, score, chunk_id, metadata fields
     """
-    # If the collection is empty, return early to avoid querying with n_results=0
+    # If the collection is empty, return early to avoid querying with
+    # n_results=0
     if collection.count() == 0:
         return []
 
@@ -293,14 +306,14 @@ def search_chroma(
             bbox = [0, 0, 1, 1]
 
         formatted.append({
-            "chunk_id":        chunk_id,
-            "text":            text,
-            "score":           round(score, 4),
-            "chunk_type":      meta.get("chunk_type", "text"),
-            "page":            meta.get("page", 0),
-            "bbox":            bbox,
+            "chunk_id": chunk_id,
+            "text": text,
+            "score": round(score, 4),
+            "chunk_type": meta.get("chunk_type", "text"),
+            "page": meta.get("page", 0),
+            "bbox": bbox,
             "source_document": meta.get("source_document", ""),
-            "s3_key":          meta.get("s3_key", "")
+            "s3_key": meta.get("s3_key", "")
         })
 
     return formatted
@@ -372,7 +385,9 @@ def format_memory_for_prompt(memory: Dict) -> str:
     parts = []
 
     if memory.get("preferences"):
-        pref_text = ", ".join(f"{k}: {v}" for k, v in memory["preferences"].items())
+        pref_text = ", ".join(
+            f"{k}: {v}" for k,
+            v in memory["preferences"].items())
         parts.append(f"User preferences: {pref_text}")
 
     if memory.get("facts"):
@@ -463,14 +478,16 @@ Conversation:
 
         if extracted.get("summary"):
             memory["session_summaries"].append(extracted["summary"])
-            memory["session_summaries"] = memory["session_summaries"][-10:]  # Keep last 10
+            # Keep last 10
+            memory["session_summaries"] = memory["session_summaries"][-10:]
 
         if extracted.get("preferences"):
             memory["preferences"].update(extracted["preferences"])
 
         if extracted.get("facts"):
             memory["facts"].extend(extracted["facts"])
-            memory["facts"] = list(set(memory["facts"]))[-20:]  # Keep 20 unique facts
+            # Keep 20 unique facts
+            memory["facts"] = list(set(memory["facts"]))[-20:]
 
         logger.info("✅ Memory updated from conversation")
 

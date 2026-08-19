@@ -29,12 +29,12 @@ BOX_WIDTH = 3
 def render_pdf_page(pdf_bytes: bytes, page_num: int, dpi: int = 150):
     """
     Render a PDF page to PIL image.
-    
+
     Args:
         pdf_bytes: PDF file content as bytes
         page_num: Page number (0-indexed)
         dpi: Resolution for PDF rendering (default 150)
-    
+
     Returns:
         Tuple of (PIL Image, page_width, page_height) or (None, None, None) if disabled
     """
@@ -44,7 +44,7 @@ def render_pdf_page(pdf_bytes: bytes, page_num: int, dpi: int = 150):
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         page = doc[page_num]
-        mat = fitz.Matrix(dpi/72.0, dpi/72.0)
+        mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
         pix = page.get_pixmap(matrix=mat)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         page_width, page_height = page.rect.width, page.rect.height
@@ -68,7 +68,7 @@ def extract_chunk_image(
 ) -> Optional[str]:
     """
     Dynamically extract and crop a specific chunk from PDF stored in S3.
-    
+
     Args:
         s3_client: Boto3 S3 client
         bucket: S3 bucket name
@@ -79,7 +79,7 @@ def extract_chunk_image(
         source_document: Document name without extension
         highlight: Add red border around chunk (default True)
         padding: Extra pixels around bbox (default 10)
-    
+
     Returns:
         S3 presigned URL of the cropped chunk image or None
     """
@@ -145,7 +145,8 @@ def extract_chunk_image(
             if highlight:
                 draw = ImageDraw.Draw(chunk_img)
                 draw.rectangle(
-                    [padding, padding, chunk_img.width - padding - 1, chunk_img.height - padding - 1],
+                    [padding, padding, chunk_img.width - padding -
+                        1, chunk_img.height - padding - 1],
                     outline="red",
                     width=3
                 )
@@ -190,7 +191,7 @@ def create_annotated_image_from_pdf(
 ) -> str:
     """
     Create an annotated image from a PDF page with bounding boxes
-    
+
     Args:
         pdf_bytes: PDF file content as bytes
         page_num: Page number (1-indexed)
@@ -200,7 +201,7 @@ def create_annotated_image_from_pdf(
         bucket: S3 bucket name
         dpi: Resolution for PDF rendering
         chunk_type: Type of chunk for color coding
-    
+
     Returns:
         S3 URL of the uploaded annotated image
     """
@@ -209,10 +210,11 @@ def create_annotated_image_from_pdf(
         pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
 
         # Get the specific page (0-indexed in PyMuPDF)
-        page = pdf_document[page_num - 1] if page_num > 0 else pdf_document[page_num]
+        page = pdf_document[page_num -
+                            1] if page_num > 0 else pdf_document[page_num]
 
         # Render page to image at specified DPI
-        mat = fitz.Matrix(dpi/72.0, dpi/72.0)
+        mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
         pix = page.get_pixmap(matrix=mat)
         img_data = pix.tobytes("png")
 
@@ -238,7 +240,8 @@ def create_annotated_image_from_pdf(
             "default": (128, 128, 128)       # Gray for unknown types
         }
         # Get RGB color based on chunk type
-        rgb_color = CHUNK_TYPE_COLORS.get(chunk_type.lower(), CHUNK_TYPE_COLORS["default"])
+        rgb_color = CHUNK_TYPE_COLORS.get(
+            chunk_type.lower(), CHUNK_TYPE_COLORS["default"])
 
         # Draw bounding boxes
         for bbox in bounding_boxes:
@@ -274,13 +277,15 @@ def create_annotated_image_from_pdf(
                 overlay_draw = ImageDraw.Draw(overlay)
 
                 # Create semi-transparent version of the RGB color
-                fill_color = rgb_color + (30,)  # Add alpha channel for transparency
+                # Add alpha channel for transparency
+                fill_color = rgb_color + (30,)
 
                 overlay_draw.rectangle(
                     [x1, y1, x2, y2],
                     fill=fill_color
                 )
-                img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
+                img = Image.alpha_composite(
+                    img.convert('RGBA'), overlay).convert('RGB')
 
         # Save to bytes
         img_bytes = io.BytesIO()
@@ -322,7 +327,7 @@ def get_or_create_annotated_image(
 ) -> Optional[str]:
     """
     Get existing annotated image or create a new one
-    
+
     Args:
         s3_client: Boto3 S3 client
         bucket: S3 bucket name
@@ -330,14 +335,17 @@ def get_or_create_annotated_image(
         chunk_id: Unique chunk identifier
         grounding_info: Dictionary with 'page' and 'box' information
         force_recreate: Force recreation even if image exists
-    
+
     Returns:
         URL of the annotated image or None if failed
     """
     # Generate annotation key
     page_num = grounding_info.get('page', 1)
-    clean_chunk_id = chunk_id.replace('<a id=', '').replace('></a>', '').strip('"')
-    annotation_key = f"annotations/{Path(source_pdf_key).stem}_p{page_num}_{clean_chunk_id}.png"
+    clean_chunk_id = chunk_id.replace(
+        '<a id=', '').replace(
+        '></a>', '').strip('"')
+    annotation_key = f"annotations/{Path(source_pdf_key).stem}_p{
+        page_num}_{clean_chunk_id}.png"
 
     # Check if annotation already exists
     if not force_recreate:
@@ -380,10 +388,10 @@ def get_or_create_annotated_image(
 def extract_chunk_id_from_markdown(markdown_text: str) -> Optional[str]:
     """
     Extract chunk ID from markdown text containing anchor tags
-    
+
     Args:
         markdown_text: Markdown text with anchor tags like <a id="chunk_123"></a>
-    
+
     Returns:
         Chunk ID or None if not found
     """
@@ -397,5 +405,3 @@ def extract_chunk_id_from_markdown(markdown_text: str) -> Optional[str]:
         return match.group(1)
 
     return None
-
-

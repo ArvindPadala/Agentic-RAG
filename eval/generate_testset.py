@@ -1,13 +1,17 @@
+from config import settings
+from gemini_helpers import init_chroma_collection
 import os
 import json
 import pandas as pd
-from google import genai
 import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(
+    0,
+    os.path.abspath(
+        os.path.join(
+            os.path.dirname(__file__),
+            '..')))
 # noqa: E402
-from gemini_helpers import init_chroma_collection
 # noqa: E402
-from config import settings
 
 
 def generate_golden_dataset():
@@ -25,7 +29,10 @@ def generate_golden_dataset():
     # Sample up to 100 chunks to generate questions
     import random
     random.seed(42)
-    sample_indices = random.sample(range(len(documents)), min(100, len(documents)))
+    sample_indices = random.sample(
+        range(
+            len(documents)), min(
+            100, len(documents)))
 
     from llm_router import GeminiRouter
     client = GeminiRouter(api_keys=settings.GEMINI_API_KEYS)
@@ -71,7 +78,8 @@ Context:
                 "contexts": [chunk_text],
                 "source": metadatas[idx].get("source_document", "unknown")
             })
-            print(f"[{i+1}/{len(sample_indices)}] Generated Q: {data['question'][:50]}...")
+            print(
+                f"[{i + 1}/{len(sample_indices)}] Generated Q: {data['question'][:50]}...")
         except Exception as e:
             print(f"Error generating for chunk {idx}: {e}")
 

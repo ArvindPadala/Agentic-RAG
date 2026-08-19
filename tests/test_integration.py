@@ -1,6 +1,6 @@
 import unittest
-from unittest.mock import patch, MagicMock
-from agent import build_search_tool, build_agent_config
+from unittest.mock import patch
+from agent import build_search_tool
 
 
 class TestAgentIntegration(unittest.TestCase):
@@ -17,10 +17,15 @@ class TestAgentIntegration(unittest.TestCase):
         }
         mock_collection.count.return_value = 1
 
-        search_fn, search_tool = build_search_tool(mock_collection, mock_gemini, mock_s3, "test_bucket")
+        search_fn, search_tool = build_search_tool(
+            mock_collection, mock_gemini, mock_s3, "test_bucket")
 
-        self.assertEqual(search_tool.function_declarations[0].name, "search_knowledge_base")
-        self.assertIn("Search the document", search_tool.function_declarations[0].description)
+        self.assertEqual(
+            search_tool.function_declarations[0].name,
+            "search_knowledge_base")
+        self.assertIn(
+            "Search the document",
+            search_tool.function_declarations[0].description)
 
         # Test the function execution
         result = search_fn("test query")

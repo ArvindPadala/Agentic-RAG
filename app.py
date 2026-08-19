@@ -12,8 +12,15 @@ Run:
     # Public share: python app.py --share
 """
 
+from gemini_helpers import load_memory, save_memory, update_memory_from_conversation
+from agent import (
+    create_gemini_router,
+    create_s3_client,
+    load_chroma_collection,
+    build_search_tool,
+    run_agent_turn,
+)
 import re
-import sys
 import argparse
 import gradio as gr
 from config import settings
@@ -22,18 +29,8 @@ from upload_handler import make_upload_fn
 
 logger = get_logger("app")
 
-from agent import (
-    create_gemini_router,
-    create_s3_client,
-    load_chroma_collection,
-    build_search_tool,
-    build_agent_config,
-    run_agent_turn,
-)
-from gemini_helpers import load_memory, save_memory, update_memory_from_conversation
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ─────────────────────────────────────────────────────────────
 
 # S3 image URL pattern — matches presigned URLs like:
 # https://bucket.s3.amazonaws.com/output/.../chunk.png?X-Amz-Algorithm=...
@@ -73,8 +70,6 @@ def extract_image_urls(text: str) -> list[str]:
     return urls
 
 
-
-
 def clean_response(text: str) -> str:
     """
     Strip S3 image URLs from the chat text — they display in the image panel instead.
@@ -109,8 +104,8 @@ def clean_response(text: str) -> str:
 def format_memory_status(memory: dict) -> str:
     """Render the memory summary for the info panel."""
     sessions = len(memory.get("session_summaries", []))
-    facts    = len(memory.get("facts", []))
-    prefs    = len(memory.get("preferences", []))
+    facts = len(memory.get("facts", []))
+    prefs = len(memory.get("preferences", []))
     lines = [
         "### 🧠 Agent Memory",
         f"- **Sessions remembered:** {sessions}",
@@ -129,12 +124,12 @@ def format_memory_status(memory: dict) -> str:
 # ── Available Gemini models ──────────────────────────────────────────────────
 # Listed in order of capability. Free-tier daily limits shown for reference.
 AVAILABLE_MODELS = [
-    ("Gemini 3.5 Flash  (Recommended)",  "models/gemini-3.5-flash"),
+    ("Gemini 3.5 Flash  (Recommended)", "models/gemini-3.5-flash"),
     ("Gemini 3.5 Flash-Lite  (Recommended)", "models/gemini-3.5-flash-lite"),
-    ("Gemini Flash Latest  (Latest Free)",  "models/gemini-flash-latest"),
+    ("Gemini Flash Latest  (Latest Free)", "models/gemini-flash-latest"),
 ]
-MODEL_LABELS   = [label for label, _ in AVAILABLE_MODELS]
-MODEL_IDS      = {label: mid for label, mid in AVAILABLE_MODELS}
+MODEL_LABELS = [label for label, _ in AVAILABLE_MODELS]
+MODEL_IDS = {label: mid for label, mid in AVAILABLE_MODELS}
 
 # We initialize the search UI state to match the radio button's default value
 DEFAULT_SEARCH_LABEL = "Elite Hybrid Search (RRF + Reranker)"
@@ -155,9 +150,10 @@ def is_overload_error(e: Exception) -> bool:
     return "503" in msg or "UNAVAILABLE" in msg or "HIGH DEMAND" in msg
 
 
-# ── Core chat function ────────────────────────────────────────────────────────
+# ── Core chat function ──────────────────────────────────────────────────
 
-def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, bucket_name):
+def make_chat_fn(gemini_client, memory, memory_file,
+                 s3_client, collection, bucket_name):
     """
     Returns the Gradio chat handler.
 
@@ -168,12 +164,13 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
     def chat(user_message: str, history: list, conversation_history: list,
              search_type: str, use_decomposition: bool, use_guardrail: bool):
         if not user_message.strip():
-            return history, conversation_history, [], format_memory_status(memory)
+            return history, conversation_history, [
+            ], format_memory_status(memory)
 
         # 1. Determine Search Type
         use_hybrid = "Hybrid" in search_type
         use_reranker = "Reranker" in search_type
-        
+
         # 2. Build the tool dynamically based on UI selection
         search_fn, search_tool = build_search_tool(
             collection=collection,
@@ -184,13 +181,14 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
             use_reranker=use_reranker
         )
         tool_map = {"search_knowledge_base": search_fn}
-        
+
         # 3. Create generation config with the specific tool and memory
         from agent import build_agent_config
         generation_config = build_agent_config(search_tool, memory)
 
         # 4. Use the resilient auto-routing from GeminiRouter
-        model_id = "models/gemini-3.5-flash"  # GeminiRouter handles the actual fallback logic
+        # GeminiRouter handles the actual fallback logic
+        model_id = "models/gemini-3.5-flash"
 
         # Append user message in Gradio 6.x messages format
         history = history + [{"role": "user", "content": user_message}]
@@ -210,13 +208,13 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
         except Exception as e:
             if is_rate_limit_error(e):
                 error_msg = (
-                    f"⚠️ **Daily limit reached.**\n\n"
+                    "⚠️ **Daily limit reached.**\n\n"
                     "The free-tier quota is used up for today.\n"
                     "👉 **Please try again tomorrow.**"
                 )
             elif is_overload_error(e):
                 error_msg = (
-                    f"⚠️ **The model is temporarily overloaded** (high demand).\n\n"
+                    "⚠️ **The model is temporarily overloaded** (high demand).\n\n"
                     "This is usually resolved in a few minutes.\n"
                     "👉 **Wait a moment and retry.**"
                 )
@@ -228,7 +226,8 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
             # doesn't see a failed partial turn on the next attempt
             if conversation_history:
                 conversation_history.pop()
-            return history, conversation_history, "<div style='text-align:center; color:#888; padding:20px;'>Error occurred.</div>", format_memory_status(memory)
+            return history, conversation_history, "<div style='text-align:center; color:#888; padding:20px;'>Error occurred.</div>", format_memory_status(
+                memory)
 
         # Extract visual grounding image URLs from the response text
         image_urls = extract_image_urls(raw_response)
@@ -236,7 +235,8 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
         # Build HTML for images
         html_content = ""
         for url in image_urls:
-            html_content += f'<div style="margin-bottom:15px;"><img src="{url}" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
+            html_content += f'<div style="margin-bottom:15px;"><img src="{
+                url}" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
         if not html_content:
             html_content = "<div style='text-align:center; color:#888; padding:20px;'>No visual grounding for this response.</div>"
 
@@ -244,9 +244,11 @@ def make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, buck
         display_response = clean_response(raw_response)
 
         # Append assistant message in Gradio 6.x messages format
-        history = history + [{"role": "assistant", "content": display_response}]
+        history = history + \
+            [{"role": "assistant", "content": display_response}]
 
-        return history, conversation_history, html_content, format_memory_status(memory)
+        return history, conversation_history, html_content, format_memory_status(
+            memory)
 
     return chat
 
@@ -256,26 +258,35 @@ def make_save_fn(gemini_client, memory, memory_file):
     def save(conversation_history):
         if not conversation_history:
             return "⚠️ No conversation to save yet."
-        updated = update_memory_from_conversation(memory, conversation_history, gemini_client)
+        updated = update_memory_from_conversation(
+            memory, conversation_history, gemini_client)
         memory.update(updated)
         save_memory(memory, memory_file)
         return "✅ Memory saved!"
     return save
 
 
-# ── Gradio UI ─────────────────────────────────────────────────────────────────
+# ── Gradio UI ───────────────────────────────────────────────────────────
 
-def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_name):
-    chat_fn = make_chat_fn(gemini_client, memory, memory_file, s3_client, collection, bucket_name)
+def build_ui(gemini_client, memory, memory_file,
+             s3_client, collection, bucket_name):
+    chat_fn = make_chat_fn(
+        gemini_client,
+        memory,
+        memory_file,
+        s3_client,
+        collection,
+        bucket_name)
     save_fn = make_save_fn(gemini_client, memory, memory_file)
     upload_fn = make_upload_fn(s3_client, bucket_name, collection)
 
     with gr.Blocks(title="Document RAG Agent") as demo:
 
         # ── Session state ──────────────────────────────────────────────────
-        conv_state    = gr.State([])
-        search_state  = gr.State(DEFAULT_SEARCH_LABEL)   # tracks selected retrieval engine
-        decomp_state  = gr.State(False)
+        conv_state = gr.State([])
+        # tracks selected retrieval engine
+        search_state = gr.State(DEFAULT_SEARCH_LABEL)
+        decomp_state = gr.State(False)
         guardrail_state = gr.State(False)
 
         # ── Header ────────────────────────────────────────────────────────
@@ -290,7 +301,7 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
             with gr.Column(scale=2):
                 search_type_toggle = gr.Radio(
                     choices=[
-                        "Standard Vector Search", 
+                        "Standard Vector Search",
                         "Agentic Hybrid Search (RRF)",
                         "Elite Hybrid Search (RRF + Reranker)"
                     ],
@@ -315,13 +326,15 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
             # ── TAB 1: Chat ────────────────────────────────────────────────
             with gr.Tab("💬 Chat"):
                 with gr.Row():
-                    # ── LEFT: Chat ────────────────────────────────────────────────
+                    # ── LEFT: Chat ───────────────────────────────────────────
                     with gr.Column(scale=3, elem_classes="chat-col"):
                         chatbot = gr.Chatbot(
                             label="Conversation",
                             height=480,
                             render_markdown=True,
-                            avatar_images=(None, "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg"),
+                            avatar_images=(
+                                None,
+                                "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg"),
                         )
 
                         with gr.Row():
@@ -331,27 +344,30 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
                                 lines=2,
                                 scale=5,
                             )
-                            send_btn = gr.Button("Send →", variant="primary", scale=1, elem_id="send-btn")
+                            send_btn = gr.Button(
+                                "Send →", variant="primary", scale=1, elem_id="send-btn")
 
                         with gr.Row():
-                            clear_btn  = gr.Button("🗑️ Clear Chat", size="sm")
-                            save_btn   = gr.Button("💾 Save Memory", size="sm", variant="secondary")
+                            clear_btn = gr.Button("🗑️ Clear Chat", size="sm")
+                            save_btn = gr.Button(
+                                "💾 Save Memory", size="sm", variant="secondary")
                             save_status = gr.Textbox(show_label=False, interactive=False,
                                                      placeholder="", scale=2, lines=1)
 
-                    # ── RIGHT: Visual Grounding ────────────────────────────────────
+                    # ── RIGHT: Visual Grounding ──────────────────────────────
                     with gr.Column(scale=2, elem_classes="image-col"):
-                        gr.Markdown("### 🔍 Visual Grounding\n*Highlighted PDF regions from last answer*")
+                        gr.Markdown(
+                            "### 🔍 Visual Grounding\n*Highlighted PDF regions from last answer*")
                         image_gallery = gr.HTML(
                             value="<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>",
                             elem_id="visual-grounding-html"
                         )
 
-                # ── Bottom: Memory status ──────────────────────────────────────────
+                # ── Bottom: Memory status ────────────────────────────────────
                 with gr.Accordion("🧠 Agent Memory", open=False):
                     memory_display = gr.Markdown(format_memory_status(memory))
 
-                # ── Example questions ──────────────────────────────────────────────
+                # ── Example questions ────────────────────────────────────────
                 gr.Examples(
                     examples=[
                         ["What are the common symptoms of a cold?"],
@@ -363,15 +379,19 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
                     label="Try these questions:",
                 )
 
-            # ── TAB 2: Manage Knowledge Base ──────────────────────────────────────────────
+            # ── TAB 2: Manage Knowledge Base ─────────────────────────────────
             with gr.Tab("📄 Manage Knowledge Base"):
-                gr.Markdown("### Upload New Documents\nUpload PDFs to automatically chunk, embed, and index them into ChromaDB.")
+                gr.Markdown(
+                    "### Upload New Documents\nUpload PDFs to automatically chunk, embed, and index them into ChromaDB.")
                 with gr.Row():
                     with gr.Column(scale=2):
-                        upload_files = gr.File(label="Upload PDFs", file_count="multiple", file_types=[".pdf"])
-                        upload_btn = gr.Button("Upload & Index Documents", variant="primary")
+                        upload_files = gr.File(
+                            label="Upload PDFs", file_count="multiple", file_types=[".pdf"])
+                        upload_btn = gr.Button(
+                            "Upload & Index Documents", variant="primary")
                     with gr.Column(scale=3):
-                        upload_status = gr.Textbox(label="Status", lines=15, interactive=False)
+                        upload_status = gr.Textbox(
+                            label="Status", lines=15, interactive=False)
 
                 upload_btn.click(
                     fn=upload_fn,
@@ -381,8 +401,10 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        def submit(message, history, conv_history, search_type, use_decomp, use_guardrail):
-            return chat_fn(message, history, conv_history, search_type, use_decomp, use_guardrail)
+        def submit(message, history, conv_history,
+                   search_type, use_decomp, use_guardrail):
+            return chat_fn(message, history, conv_history,
+                           search_type, use_decomp, use_guardrail)
 
         # Sync toggle → search state
         search_type_toggle.change(
@@ -390,14 +412,14 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
             inputs=search_type_toggle,
             outputs=search_state,
         )
-        
+
         # Sync decomp toggle -> decomp state
         decomp_toggle.change(
             fn=lambda val: val,
             inputs=decomp_toggle,
             outputs=decomp_state,
         )
-        
+
         # Sync guardrail toggle -> guardrail state
         guardrail_toggle.change(
             fn=lambda val: val,
@@ -408,7 +430,13 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
         # Send on button click
         send_btn.click(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
+            inputs=[
+                user_input,
+                chatbot,
+                conv_state,
+                search_state,
+                decomp_state,
+                guardrail_state],
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         ).then(
             fn=lambda: gr.update(value=""),
@@ -418,7 +446,13 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
         # Send on Enter key
         user_input.submit(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
+            inputs=[
+                user_input,
+                chatbot,
+                conv_state,
+                search_state,
+                decomp_state,
+                guardrail_state],
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         ).then(
             fn=lambda: gr.update(value=""),
@@ -427,7 +461,11 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
 
         # Clear chat (keeps memory, resets conversation)
         clear_btn.click(
-            fn=lambda: ([], [], "<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>", format_memory_status(memory)),
+            fn=lambda: (
+                [],
+                [],
+                "<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>",
+                format_memory_status(memory)),
             outputs=[chatbot, conv_state, image_gallery, memory_display],
         )
 
@@ -441,25 +479,42 @@ def build_ui(gemini_client, memory, memory_file, s3_client, collection, bucket_n
     return demo
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Main ────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Gradio UI for Document RAG Agent")
-    parser.add_argument("--share",       action="store_true", help="Create a public share link")
-    parser.add_argument("--port",        type=int, default=7860, help="Local port (default: 7860)")
-    parser.add_argument("--collection",  default="document_chunks", help="ChromaDB collection")
-    parser.add_argument("--chroma-path", default="./chroma_db",    help="ChromaDB folder")
-    parser.add_argument("--memory-file", default="memory.json",    help="Memory JSON file")
-    parser.add_argument("--model",       default="models/gemini-3.5-flash", help="Gemini model")
+    parser = argparse.ArgumentParser(
+        description="Gradio UI for Document RAG Agent")
+    parser.add_argument(
+        "--share",
+        action="store_true",
+        help="Create a public share link")
+    parser.add_argument("--port", type=int, default=7860,
+                        help="Local port (default: 7860)")
+    parser.add_argument(
+        "--collection",
+        default="document_chunks",
+        help="ChromaDB collection")
+    parser.add_argument(
+        "--chroma-path",
+        default="./chroma_db",
+        help="ChromaDB folder")
+    parser.add_argument(
+        "--memory-file",
+        default="memory.json",
+        help="Memory JSON file")
+    parser.add_argument(
+        "--model",
+        default="models/gemini-3.5-flash",
+        help="Gemini model")
     args = parser.parse_args()
 
     logger.info("\n🚀 Starting Document RAG Agent UI...")
     logger.info("─" * 40)
 
-    gemini_client     = create_gemini_router(settings.GEMINI_API_KEYS)
-    s3_client         = create_s3_client()
-    collection        = load_chroma_collection(args.collection, args.chroma_path)
-    memory            = load_memory(args.memory_file)
+    gemini_client = create_gemini_router(settings.GEMINI_API_KEYS)
+    s3_client = create_s3_client()
+    collection = load_chroma_collection(args.collection, args.chroma_path)
+    memory = load_memory(args.memory_file)
 
     logger.info("─" * 40)
     logger.info(f"✅ All systems ready — launching Gradio on port {args.port}")

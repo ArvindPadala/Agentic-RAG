@@ -1,3 +1,4 @@
+from langsmith import traceable
 from rank_bm25 import BM25Okapi
 import re
 
@@ -7,13 +8,16 @@ _BM25_CACHE = {}
 # Global cache for the Cross-Encoder model to avoid slow reloads
 _RERANKER_MODEL = None
 
+
 def get_reranker():
     global _RERANKER_MODEL
     if _RERANKER_MODEL is None:
         from sentence_transformers import CrossEncoder
         import logging
-        logging.info("⏳ Loading Cross-Encoder reranker model (this may take a moment on first run)...")
-        _RERANKER_MODEL = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+        logging.info(
+            "⏳ Loading Cross-Encoder reranker model (this may take a moment on first run)...")
+        _RERANKER_MODEL = CrossEncoder(
+            'cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
     return _RERANKER_MODEL
 
 
@@ -40,11 +44,10 @@ def get_bm25_index(collection, collection_name):
     _BM25_CACHE[collection_name] = index_data
     return index_data
 
-from langsmith import traceable
-import json
 
 @traceable(run_type="retriever")
-def search_chroma_hybrid(query: str, collection, n_results: int = 5, use_reranker: bool = False) -> list[dict]:
+def search_chroma_hybrid(query: str, collection, n_results: int = 5,
+                         use_reranker: bool = False) -> list[dict]:
     if collection.count() == 0:
         return []
 
@@ -86,35 +89,51 @@ def search_chroma_hybrid(query: str, collection, n_results: int = 5, use_reranke
     for rank, item in enumerate(vector_ranked):
         cid = item["chunk_id"]
         if cid not in rrf_scores:
-            rrf_scores[cid] = {"rrf": 0, "text": item["text"], "meta": item["meta"], "v_score": item["score"], "b_score": 0}
+            rrf_scores[cid] = {
+                "rrf": 0,
+                "text": item["text"],
+                "meta": item["meta"],
+                "v_score": item["score"],
+                "b_score": 0}
         rrf_scores[cid]["rrf"] += 1.0 / (k + rank + 1)
 
     for rank, item in enumerate(bm25_ranked):
         cid, b_score, text, meta = item
         if cid not in rrf_scores:
-            rrf_scores[cid] = {"rrf": 0, "text": text, "meta": meta, "v_score": 0, "b_score": b_score}
+            rrf_scores[cid] = {
+                "rrf": 0,
+                "text": text,
+                "meta": meta,
+                "v_score": 0,
+                "b_score": b_score}
         rrf_scores[cid]["rrf"] += 1.0 / (k + rank + 1)
 
     # Sort by RRF score initially
-    sorted_fused = sorted(rrf_scores.items(), key=lambda x: x[1]["rrf"], reverse=True)
+    sorted_fused = sorted(
+        rrf_scores.items(),
+        key=lambda x: x[1]["rrf"],
+        reverse=True)
 
     # 4. Optional: Cross-Encoder Reranking
     if use_reranker:
         reranker = get_reranker()
         # Take the top N*2 from RRF to rerank
         top_k_fused = sorted_fused[:n_results * 2]
-        
+
         # Prepare pairs: (query, document_text)
         cross_inp = [[query, data["text"]] for _, data in top_k_fused]
         cross_scores = reranker.predict(cross_inp)
-        
+
         # Update scores in our list and resort
         for i in range(len(top_k_fused)):
             chunk_id = top_k_fused[i][0]
             # Override RRF score with the more accurate Cross-Encoder logit
             rrf_scores[chunk_id]["rerank_score"] = float(cross_scores[i])
-            
-        sorted_fused = sorted(top_k_fused, key=lambda x: x[1]["rerank_score"], reverse=True)
+
+        sorted_fused = sorted(
+            top_k_fused,
+            key=lambda x: x[1]["rerank_score"],
+            reverse=True)
 
     formatted = []
     for chunk_id, data in sorted_fused[:n_results]:
@@ -128,7 +147,8 @@ def search_chroma_hybrid(query: str, collection, n_results: int = 5, use_reranke
         formatted.append({
             "chunk_id": chunk_id,
             "text": data["text"],
-            "score": round(data.get("rerank_score", data["rrf"]), 4),  # using Rerank or RRF as score
+            # using Rerank or RRF as score
+            "score": round(data.get("rerank_score", data["rrf"]), 4),
             "source_document": meta.get("source_document", "Unknown"),
             "page": meta.get("page", 1),
             "chunk_type": meta.get("chunk_type", "Unknown"),

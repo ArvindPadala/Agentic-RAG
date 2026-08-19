@@ -33,7 +33,9 @@ class TestAgentE2E(unittest.TestCase):
             tool_map={"search_knowledge_base": mock_search_fn}
         )
 
-        self.assertEqual(response, "This is a mocked response about transformers.")
+        self.assertEqual(
+            response,
+            "This is a mocked response about transformers.")
 
 
 if __name__ == "__main__":

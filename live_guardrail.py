@@ -1,7 +1,7 @@
 """
 live_guardrail.py — Runtime Faithfulness Check
 ================================================
-A fast LLM-as-a-judge interceptor that evaluates whether the agent's 
+A fast LLM-as-a-judge interceptor that evaluates whether the agent's
 generated answer hallucinated any claims not grounded in the retrieved context.
 """
 import json
@@ -28,18 +28,21 @@ Format your output exactly like this:
 }
 """
 
-def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: GeminiRouter, model: str = "models/gemini-3.5-flash-lite") -> tuple[bool, str]:
+
+def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: GeminiRouter,
+                       model: str = "models/gemini-3.5-flash-lite") -> tuple[bool, str]:
     """
     Evaluates the final answer against the aggregated retrieved context.
     Returns a tuple of (is_faithful, reasoning).
     """
     if not context_chunks:
         # If no context was retrieved, any factual claim in the answer is a hallucination.
-        # But if the answer is "I don't know", it's faithful. We let the LLM decide.
+        # But if the answer is "I don't know", it's faithful. We let the LLM
+        # decide.
         context_text = "NO CONTEXT RETRIEVED"
     else:
         context_text = "\n\n---\n\n".join(context_chunks)
-        
+
     evaluation_input = f"""
 === RETRIEVED CONTEXT ===
 {context_text}
@@ -49,32 +52,33 @@ def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: Ge
 """
 
     logger.info("🛡️ Running Live Faithfulness Guardrail...")
-    
+
     config = genai_types.GenerateContentConfig(
         temperature=0.0,
         response_mime_type="application/json",
         system_instruction=GUARDRAIL_PROMPT
     )
-    
+
     try:
         response = gemini_router.models.generate_content(
             model=model,
             contents=[evaluation_input],
             config=config
         )
-        
+
         result = json.loads(response.text)
         is_faithful = result.get("is_faithful", True)
         reason = result.get("reason", "No reason provided")
-        
+
         if is_faithful:
             logger.info(f"✅ Guardrail PASSED: {reason}")
         else:
             logger.warning(f"⚠️ Guardrail FAILED: {reason}")
-            
+
         return is_faithful, reason
-        
+
     except Exception as e:
         logger.error(f"❌ Guardrail execution failed: {e}. Defaulting to pass.")
-        # Fail open in production so we don't break the UX if the guardrail API errors
+        # Fail open in production so we don't break the UX if the guardrail API
+        # errors
         return True, "Guardrail API error."

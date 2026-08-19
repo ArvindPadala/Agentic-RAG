@@ -30,36 +30,43 @@ Example Output:
 ]
 """
 
-def decompose_query(raw_query: str, gemini_router: GeminiRouter, model: str = "models/gemini-3.5-flash-lite") -> list[str]:
+
+def decompose_query(raw_query: str, gemini_router: GeminiRouter,
+                    model: str = "models/gemini-3.5-flash-lite") -> list[str]:
     """
     Takes a raw user question and asks a fast LLM model to decompose it
     into a JSON list of targeted sub-queries.
     """
     logger.info(f"🧠 Optimizing query: '{raw_query}'")
-    
+
     config = genai_types.GenerateContentConfig(
         temperature=0.1,
         response_mime_type="application/json",
         system_instruction=DECOMPOSITION_PROMPT
     )
-    
+
     try:
         response = gemini_router.models.generate_content(
             model=model,
             contents=[raw_query],
             config=config
         )
-        
+
         # Parse the JSON response
         sub_queries = json.loads(response.text)
-        
-        if not isinstance(sub_queries, list) or not all(isinstance(q, str) for q in sub_queries):
-            logger.warning("Query optimizer returned invalid JSON format. Falling back to raw query.")
+
+        if not isinstance(sub_queries, list) or not all(
+                isinstance(q, str) for q in sub_queries):
+            logger.warning(
+                "Query optimizer returned invalid JSON format. Falling back to raw query.")
             return [raw_query]
-            
-        logger.info(f"✅ Decomposed into {len(sub_queries)} queries: {sub_queries}")
+
+        logger.info(
+            f"✅ Decomposed into {
+                len(sub_queries)} queries: {sub_queries}")
         return sub_queries
-        
+
     except Exception as e:
-        logger.error(f"❌ Query optimization failed: {e}. Falling back to raw query.")
+        logger.error(f"❌ Query optimization failed: {
+                     e}. Falling back to raw query.")
         return [raw_query]
