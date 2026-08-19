@@ -323,8 +323,7 @@ def build_agent_graph():
             tool_name = fc.name
             tool_args = dict(fc.args) if fc.args else {}
 
-            logger.info(f"   🔧 {tool_name}({', '.join(
-                f'{k}={repr(v)}' for k, v in tool_args.items())})")
+            logger.info(f"   🔧 {tool_name}({', '.join(f'{k}={repr(v)}' for k, v in tool_args.items())})")
 
             if tool_name in tool_map:
                 try:
