@@ -432,6 +432,13 @@ def build_ui(gemini_client, memory, memory_file,
             return chat_fn(message, history, conv_history,
                            search_type, use_decomp, use_guardrail)
 
+        # ── Dummy GPU Function to satisfy ZeroGPU startup checks ──────────
+        @gpu_decorator
+        def dummy_gpu_fn():
+            return None
+
+        demo.load(fn=dummy_gpu_fn, inputs=None, outputs=None)
+
         # Sync toggle → search state
         search_type_toggle.change(
             fn=lambda label: label,
