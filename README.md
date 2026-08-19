@@ -1,3 +1,13 @@
+---
+title: Agentic Document RAG
+emoji: 📄
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+app_file: app.py
+pinned: false
+---
+
 # Agentic-RAG: Production-Ready Retrieval with Visual Grounding
 
 > A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Elite Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, query decomposition, self-corrective retrieval, a live faithfulness guardrail, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.

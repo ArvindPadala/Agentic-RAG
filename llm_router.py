@@ -66,8 +66,7 @@ class GeminiRouter:
                     "🚨 Exhausted all API keys and all fallback models! Resetting to primary and sleeping...")
                 self.current_model_idx = 0
             else:
-                logger.info(f"🔄 Switching to fallback model: {
-                            self.fallback_models[self.current_model_idx]}")
+                logger.info(f"🔄 Switching to fallback model: {self.fallback_models[self.current_model_idx]}")
         else:
             logger.info(f"🔄 Rotating to API Key #{self.current_key_idx + 1}")
 
@@ -94,10 +93,7 @@ class GeminiRouter:
 
         @traceable(run_type="chain", name="gemini_generate_content")
         def _execute(c, cfg, kw):
-            logger.debug(
-                f"Attempting generation with Key #{
-                    self.current_key_idx +
-                    1} on model {model_name}")
+            logger.debug(f"Attempting generation with Key #{self.current_key_idx + 1} on model {model_name}")
             return client.models.generate_content(
                 model=model_name,
                 contents=c,
@@ -110,10 +106,6 @@ class GeminiRouter:
 
         except APIError as e:
             if hasattr(e, 'code') and e.code in [404, 429, 503]:
-                logger.warning(
-                    f"⚠️ Caught {
-                        e.code} API Error from Key #{
-                        self.current_key_idx +
-                        1} ({model_name}). Rotating...")
+                logger.warning(f"⚠️ Caught {e.code} API Error from Key #{self.current_key_idx + 1} ({model_name}). Rotating...")
                 self._rotate_key_or_model()
             raise e  # Reraise for tenacity to catch and trigger exponential backoff if rotation doesn't immediately solve it

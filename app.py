@@ -235,8 +235,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
         # Build HTML for images
         html_content = ""
         for url in image_urls:
-            html_content += f'<div style="margin-bottom:15px;"><img src="{
-                url}" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
+            html_content += f'<div style="margin-bottom:15px;"><img src="{url}" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
         if not html_content:
             html_content = "<div style='text-align:center; color:#888; padding:20px;'>No visual grounding for this response.</div>"
 

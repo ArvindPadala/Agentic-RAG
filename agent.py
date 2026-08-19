@@ -271,9 +271,7 @@ def build_agent_graph():
         model = state["model"]
 
         if iteration > 0:
-            logger.info(
-                f"   🔄 Reflection iteration {
-                    iteration + 1}/{max_iterations} — agent is refining its search")
+            logger.info(f"   🔄 Reflection iteration {iteration + 1}/{max_iterations} — agent is refining its search")
 
         if iteration == max_iterations - 2:
             conversation_history.append(
@@ -388,8 +386,7 @@ def build_agent_graph():
                 final_text, context_chunks, gemini_client)
 
             if not is_faithful:
-                final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {
-                    reason})"
+                final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {reason})"
 
         conversation_history[-1] = genai_types.Content(
             role="model", parts=[genai_types.Part(text=final_text)])
@@ -531,9 +528,7 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
 
             conversation_num += 1
             logger.info(f"\n{'─' * 70}")
-            logger.info(
-                f"Question #{conversation_num} [{
-                    datetime.now().strftime('%H:%M:%S')}]")
+            logger.info(f"Question #{conversation_num} [{datetime.now().strftime('%H:%M:%S')}]")
             logger.info(f"  \"{user_input}\"")
             logger.info(f"{'─' * 70}")
             logger.info("\nAgent Response (processing...)\n")

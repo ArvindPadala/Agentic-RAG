@@ -61,12 +61,9 @@ def decompose_query(raw_query: str, gemini_router: GeminiRouter,
                 "Query optimizer returned invalid JSON format. Falling back to raw query.")
             return [raw_query]
 
-        logger.info(
-            f"✅ Decomposed into {
-                len(sub_queries)} queries: {sub_queries}")
+        logger.info(f"✅ Decomposed into {len(sub_queries)} queries: {sub_queries}")
         return sub_queries
 
     except Exception as e:
-        logger.error(f"❌ Query optimization failed: {
-                     e}. Falling back to raw query.")
+        logger.error(f"❌ Query optimization failed: {e}. Falling back to raw query.")
         return [raw_query]
