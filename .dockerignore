@@ -35,12 +35,10 @@ share/python-wheels/
 MANIFEST
 
 # Data and Models
-chroma_db/
 memory.json
 images/
 input/
 output/
-documents/
 
 # Notebooks
 .ipynb_checkpoints
