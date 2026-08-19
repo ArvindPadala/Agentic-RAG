@@ -427,7 +427,6 @@ def build_ui(gemini_client, memory, memory_file,
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        @gpu_decorator
         def submit(message, history, conv_history,
                    search_type, use_decomp, use_guardrail):
             return chat_fn(message, history, conv_history,
