@@ -399,6 +399,24 @@ def build_ui(gemini_client, memory, memory_file,
                     outputs=[upload_status],
                 )
 
+            # ── TAB 3: Architecture & Evaluation ─────────────────────────────
+            with gr.Tab("🏗️ Architecture & Evaluation"):
+                gr.Markdown("## System Architecture")
+                gr.Markdown(
+                    "This system implements an advanced, production-grade Retrieval-Augmented Generation (RAG) architecture.\n\n"
+                    "- **Agent Orchestration**: Built using **LangGraph** as a cyclic state machine. Handles routing, tools, and fallback loops.\n"
+                    "- **Retrieval Engine**: A 3-stage pipeline combining semantic vector search (ChromaDB), keyword search (BM25), and cross-encoder reranking (ms-marco-MiniLM).\n"
+                    "- **Visual Grounding**: Document ingestion uses **LandingAI ADE** via AWS Lambda to extract layout-aware bounding boxes and render visual citations instantly.\n"
+                    "- **Self-Correction & Guardrails**: Features a dynamic Query Optimizer and a Live Faithfulness Guardrail to intercept hallucinations before they reach the user.\n"
+                )
+
+                try:
+                    with open("EVALUATION_REPORT.md", "r") as f:
+                        eval_content = f.read()
+                    gr.Markdown(f"## Evaluation Metrics\n\n{eval_content}")
+                except Exception:
+                    gr.Markdown("Evaluation metrics not found.")
+
         # ── Event wiring ───────────────────────────────────────────────────
 
         def submit(message, history, conv_history,
@@ -529,6 +547,7 @@ def main():
         collection=collection,
         bucket_name=settings.S3_BUCKET_NAME
     )
+    demo.queue(default_concurrency_limit=2)
     demo.launch(
         server_name="0.0.0.0",
         server_port=args.port,
