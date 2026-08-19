@@ -87,6 +87,18 @@ Agentic-RAG/
 
 ---
 
+## 📈 Future Scalability Path
+
+While the *logic* of this system (LangGraph, Query Decomposition, Hybrid Search) mirrors enterprise production environments, the *infrastructure* is currently a localized prototype designed for easy setup and testing. 
+
+To handle millions of users, the architecture would transition to distributed microservices:
+1. **Frontend / API:** Replace the single-threaded Gradio interface with a dedicated frontend (e.g., Next.js) and a highly concurrent backend (e.g., FastAPI via `gunicorn`).
+2. **Lexical Index:** Replace the in-memory `rank_bm25` index with a distributed search cluster like **Elasticsearch** or **OpenSearch** to prevent Out-Of-Memory (OOM) crashes at scale.
+3. **Vector Database:** Migrate from local ChromaDB to a managed, distributed vector store like **Pinecone**, **Milvus**, or **Qdrant**.
+4. **GPU Inference:** Move the Cross-Encoder off the local CPU and host it on a dedicated GPU instance (e.g., **NVIDIA Triton** or **vLLM**) to prevent CPU thrashing under heavy concurrent load.
+
+---
+
 ## 🚀 Local Deployment & Usage
 
 ### Prerequisites
