@@ -22,6 +22,15 @@ from agent import (
 )
 import re
 import argparse
+import requests
+
+try:
+    import spaces
+    gpu_decorator = spaces.GPU
+except ImportError:
+    def gpu_decorator(func):
+        return func
+
 import gradio as gr
 from config import settings
 from utils.logger import get_logger
@@ -418,6 +427,7 @@ def build_ui(gemini_client, memory, memory_file,
 
         # ── Event wiring ───────────────────────────────────────────────────
 
+        @gpu_decorator
         def submit(message, history, conv_history,
                    search_type, use_decomp, use_guardrail):
             return chat_fn(message, history, conv_history,
