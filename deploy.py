@@ -1,8 +1,12 @@
+import os
 from huggingface_hub import HfApi
+from dotenv import load_dotenv
+
+load_dotenv()
 
 print("Starting deployment to Hugging Face Spaces...")
 
-api = HfApi(token="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")
+api = HfApi(token=os.environ.get("HF_TOKEN"))
 
 api.upload_folder(
     folder_path=".",
