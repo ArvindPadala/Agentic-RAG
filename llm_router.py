@@ -24,8 +24,8 @@ class GeminiRouter:
         # Default priority fallback models
         self.fallback_models = models or [
             "models/gemini-3.6-flash",
-            "models/gemini-3.5-flash",
-            "models/gemini-3.5-flash-lite"
+            "models/gemini-3.6-flash",
+            "models/gemini-3.6-flash-lite"
         ]
 
         self.current_key_idx = 0

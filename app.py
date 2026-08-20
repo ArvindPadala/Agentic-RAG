@@ -133,8 +133,8 @@ def format_memory_status(memory: dict) -> str:
 # ── Available Gemini models ──────────────────────────────────────────────────
 # Listed in order of capability. Free-tier daily limits shown for reference.
 AVAILABLE_MODELS = [
-    ("Gemini 3.5 Flash  (Recommended)", "models/gemini-3.5-flash"),
-    ("Gemini 3.5 Flash-Lite  (Recommended)", "models/gemini-3.5-flash-lite"),
+    ("Gemini 3.5 Flash  (Recommended)", "models/gemini-3.6-flash"),
+    ("Gemini 3.5 Flash-Lite  (Recommended)", "models/gemini-3.6-flash-lite"),
     ("Gemini Flash Latest  (Latest Free)", "models/gemini-flash-latest"),
 ]
 MODEL_LABELS = [label for label, _ in AVAILABLE_MODELS]
@@ -197,7 +197,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
 
         # 4. Use the resilient auto-routing from GeminiRouter
         # GeminiRouter handles the actual fallback logic
-        model_id = "models/gemini-3.5-flash"
+        model_id = "models/gemini-3.6-flash"
 
         # Append user message in Gradio 6.x messages format
         history = history + [{"role": "user", "content": user_message}]
@@ -537,7 +537,7 @@ def main():
         help="Memory JSON file")
     parser.add_argument(
         "--model",
-        default="models/gemini-3.5-flash",
+        default="models/gemini-3.6-flash",
         help="Gemini model")
     args = parser.parse_args()
 

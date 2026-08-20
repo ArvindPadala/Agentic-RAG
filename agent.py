@@ -432,7 +432,7 @@ def run_agent_turn(
     gemini_client,
     generation_config,
     tool_map: dict,
-    model: str = "models/gemini-3.5-flash",
+    model: str = "models/gemini-3.6-flash",
     max_iterations: int = 7,
     use_decomposition: bool = False,
     use_guardrail: bool = False,
@@ -611,8 +611,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="models/gemini-3.5-flash",
-        help="Gemini model to use (default: models/gemini-3.5-flash)",
+        default="models/gemini-3.6-flash",
+        help="Gemini model to use (default: models/gemini-3.6-flash)",
     )
     parser.add_argument(
         "--use-decomposition",
