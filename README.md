@@ -1,74 +1,65 @@
+---
+title: Agentic Document RAG
+emoji: 📄
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+app_file: app.py
+pinned: false
+---
+
 # Agentic-RAG: Production-Ready Retrieval with Visual Grounding
 
-🚀 **Live Deployment:** [Try it on Hugging Face Spaces!](https://huggingface.co/spaces/ArvindPadala/Agentic-Document-RAG)
+**Live Deployment:** [Try it on Hugging Face Spaces!](https://huggingface.co/spaces/ArvindPadala/Agentic-Document-RAG)
 
-> A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Elite Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, query decomposition, self-corrective retrieval, a live faithfulness guardrail, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.
+A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, query decomposition, self-corrective retrieval, a live faithfulness guardrail, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.
 
 ---
 
-## 🛑 The Problem with "Standard" RAG
-The industry-standard RAG tutorial (PDF → LangChain TextSplitter → Vector DB → LLM) fails in production. 
-1. **Dumb Chunking:** Splitting by character count destroys tables, diagrams, and layout context.
-2. **Dense-Only Retrieval:** Cosine similarity struggles with exact keyword matching (e.g., SKUs, IDs, acronyms).
-3. **Passive Generation:** The LLM is forced to answer based *only* on a single retrieved context, even if the user's prompt requires multi-hop reasoning or multiple separate searches.
-4. **Hallucination:** Without strict attribution, the LLM hallucinates facts.
+## 1. System Architecture
 
-## 🏗️ Our Architecture & Solutions
+The architecture addresses the common failure modes of standard RAG implementations (destructive chunking, poor lexical matching, passive generation, and ungrounded hallucinations).
 
-I engineered this system to address those exact failure points.
+### 1.1 Layout-Aware Ingestion
+Documents are ingested asynchronously through AWS Lambda into the **LandingAI ADE (Document Parsing)** model. This extracts text alongside precise spatial bounding boxes, preserving the visual layout and structural hierarchy of the document prior to embedding.
 
-### 1. Layout-Aware Ingestion (LandingAI)
-Instead of blindly splitting text, I ingest PDFs asynchronously through AWS Lambda into **LandingAI's ADE (Document Parsing)** model. This extracts text alongside spatial bounding boxes, preserving the visual layout and hierarchy of the document before storing the chunks locally.
-
-### 2. "Elite" Hybrid Retrieval (Vector + Sparse + Reranker)
-I abandoned single-path vector retrieval. My `hybrid_search.py` implements a 3-stage pipeline:
+### 1.2 Multi-Stage Hybrid Retrieval
+The retrieval engine (`hybrid_search.py`) implements a 3-stage pipeline:
 1. **Dense Retrieval:** Queries ChromaDB using `sentence-transformers/all-MiniLM-L6-v2` for semantic meaning.
 2. **Sparse Retrieval:** Queries a local `BM25Okapi` index for exact keyword and lexicon matching.
-3. **Reciprocal Rank Fusion (RRF):** Mathematically merges the Dense and Sparse ranks.
-4. **Cross-Encoder Reranking:** Passes the top fused results through a heavy Cross-Encoder model (`ms-marco-MiniLM-L-6-v2`) to accurately score the contextual relationship between the query and the chunk. 
+3. **Reciprocal Rank Fusion (RRF) & Reranking:** Mathematically merges the Dense and Sparse ranks, then passes the top fused results through a Cross-Encoder model (`ms-marco-MiniLM-L-6-v2`) to accurately score the contextual relationship between query and chunk.
 
-### 3. Query Decomposition (Pre-processing)
-Raw user questions are often vague or multi-part. Before hitting the search index, I implemented a fast LLM layer (`query_optimizer.py` using `gemini-3.5-flash-lite`) to mathematically decompose complex questions into an array of orthogonal sub-queries. 
+### 1.3 Agentic Orchestration
+The core ReAct Agent is orchestrated using a **LangGraph StateGraph** (`agent.py`).
+- **Query Decomposition:** Complex user questions are mathematically decomposed into an array of orthogonal sub-queries via a pre-processing LLM layer (`query_optimizer.py`).
+- **Parallel Execution:** When the agent requests multiple searches, the `execute_tools` node uses a `ThreadPoolExecutor` to run I/O-heavy ChromaDB/S3 searches concurrently.
+- **Self-Correction:** The agent loop runs up to 7 iterations. After each retrieval, the agent evaluates its own context against a 6-point Self-Correction Protocol, formulating new queries if context is insufficient.
 
-### 4. Enterprise Orchestration (LangGraph)
-Instead of a passive prompt chain or a fragile `while` loop, the core ReAct Agent is orchestrated using a **LangGraph StateGraph**. The Gemini model is provided a `search_knowledge_base` tool and the decomposed sub-queries. The state machine autonomously decides *whether* to search, *what* queries to formulate, and routes between nodes (`call_llm`, `execute_tools`, `run_guardrail`) until it has enough information to generate a final answer.
+### 1.4 Visual Grounding
+To prevent hallucinations, the system provides visual proof. Using the bounding boxes from the ingestion phase, PyMuPDF crops the exact region of the source PDF, uploads it to AWS S3, and returns a time-limited presigned URL directly in the UI.
 
-### 5. Self-Correction & Parallel Execution
-The agent loop runs up to 7 iterations. After each retrieval, the agent evaluates its own context against a 6-point **Self-Correction Protocol** embedded in the system prompt.
-If the agent requests multiple tools at once (e.g., following Query Decomposition), the LangGraph `execute_tools` node uses a `ThreadPoolExecutor` to run the I/O-heavy ChromaDB/S3 searches concurrently, drastically reducing latency.
-A synthesis nudge on the penultimate iteration prevents the agent from exhausting all iterations on tool calls.
-
-### 6. Visual Grounding & S3 Presigned URLs
-To prevent hallucinations and build trust, the Agent doesn't just cite its sources—it provides visual proof. Using the bounding boxes from the ingestion phase, the system uses PyMuPDF to crop the exact region of the source PDF, uploads it to AWS S3, and returns a time-limited presigned URL directly in the UI.
-
-### 7. Resilient LLM Routing (`llm_router.py`)
-To survive rate-limited free-tier APIs in production, I built a custom client router:
-- **Key Rotation**: Hot-swaps between API keys (`GEMINI_API_KEY`, `GEMINI_API_KEY_2`) on `429 Quota Exceeded` errors.
-- **Model Fallback**: Gracefully degrades (e.g., `3.6-flash` → `3.5-flash`) if primary endpoints fail.
-- **Exponential Backoff**: Jittered retry loops to survive `503` service drops.
-
-### 8. Live Faithfulness Guardrail & Strict Boundary
-To close the loop between offline evaluation and runtime safety, the agent enforces a **Strict Boundary**: if a user asks an out-of-domain question (like basic math or chitchat), the agent gracefully refuses rather than hallucinating from pre-trained knowledge. As a final interceptor, a fast LLM-as-a-judge (`live_guardrail.py`) evaluates the generated response against the retrieved context to detect hallucinations. If an ungrounded claim slips through, a prominent UI warning is appended to the answer.
+### 1.5 Resilient LLM Routing & Guardrails
+- **Router (`llm_router.py`):** Handles free-tier API rate limits via key rotation, graceful model degradation (e.g., `gemini-3.5-flash` fallback), and jittered exponential backoff.
+- **Live Guardrail (`live_guardrail.py`):** An LLM-as-a-judge interceptor that evaluates generated responses against retrieved context to detect hallucinations before streaming to the user.
 
 ---
 
-## 📊 Evaluation & Metrics (The Proof)
+## 2. Evaluation & Metrics
 
-I don't rely on vibes. Evaluating complex RAG pipelines in production is notoriously difficult due to LLM-as-a-judge rate limits and latency. To solve this, I engineered a robust **Two-Tier Evaluation Strategy** located in the `eval/` directory.
+The system relies on a Two-Tier Evaluation Strategy located in the `eval/` directory.
 
-### Tier 1: Hardware-Bound Retrieval Metrics (Fast & Free)
-I measure the system's pure retrieval accuracy on a ~100-question Golden Dataset using non-generative metrics (BM25 & local embeddings). 
-* **MRR@5:** The Elite Hybrid Reranker achieved **0.8818** (a +13% improvement over standard Vector Search).
-* **Recall@1:** Reached **0.8462**, meaning the absolute perfect document chunk is retrieved first ~85% of the time.
+### Tier 1: Hardware-Bound Retrieval Metrics
+Measures pure retrieval accuracy on a ~100-question Golden Dataset using non-generative metrics.
+* **MRR@5:** 0.8818 (+13% improvement over standard Vector Search).
+* **Recall@1:** 0.8462 (The exact document chunk is retrieved first ~85% of the time).
 
-### Tier 2: LLM-Bound Generation Metrics (Ragas Smoke Test)
-For generation metrics, I evaluate a sliced smoke-test subset via **Ragas** using a local `llama3.2:3b` Ollama judge to circumvent strict API limits and avoid costly LLM calls.
-* **Semantic Similarity:** Cosine similarity against ground truth improved across the board.
-* **Faithfulness:** The Reranker provided highly accurate context, boosting the LLM's Faithfulness score to **0.77** (up from the Baseline's 0.66) by heavily reducing hallucinations.
+### Tier 2: LLM-Bound Generation Metrics
+Evaluates a smoke-test subset via the **Ragas** framework using a local `llama3.2:3b` Ollama judge to circumvent strict API limits.
+* **Faithfulness:** The Reranker provided highly accurate context, boosting the LLM's Faithfulness score from 0.66 to **0.77**, heavily reducing hallucinations.
 
 ---
 
-## 🛠️ Project Structure
+## 3. Project Structure
 
 ```text
 Agentic-RAG/
@@ -89,35 +80,24 @@ Agentic-RAG/
 
 ---
 
-## 📈 Future Scalability Path
-
-While the *logic* of this system (LangGraph, Query Decomposition, Hybrid Search) mirrors enterprise production environments, the *infrastructure* is currently a localized prototype designed for easy setup and testing. 
-
-To handle millions of users, the architecture would transition to distributed microservices:
-1. **Frontend / API:** Replace the single-threaded Gradio interface with a dedicated frontend (e.g., Next.js) and a highly concurrent backend (e.g., FastAPI via `gunicorn`).
-2. **Lexical Index:** Replace the in-memory `rank_bm25` index with a distributed search cluster like **Elasticsearch** or **OpenSearch** to prevent Out-Of-Memory (OOM) crashes at scale.
-3. **Vector Database:** Migrate from local ChromaDB to a managed, distributed vector store like **Pinecone**, **Milvus**, or **Qdrant**.
-4. **GPU Inference:** Move the Cross-Encoder off the local CPU and host it on a dedicated GPU instance (e.g., **NVIDIA Triton** or **vLLM**) to prevent CPU thrashing under heavy concurrent load.
-
----
-
-## 🚀 Local Deployment & Usage
+## 4. Local Deployment & Usage
 
 ### Prerequisites
-- Python 3.12
-- AWS Account (S3, Lambda, IAM)
-- Google GenAI API Key (Supports multiple)
+- Python 3.10+
+- AWS Account (S3, Lambda, IAM permissions)
+- Google GenAI API Key (Supports multiple for rotation)
 - LandingAI Vision Agent API Key
 
-### Setup
+### Installation
 ```bash
 git clone https://github.com/ArvindPadala/Agentic-RAG.git
 cd Agentic-RAG
 python -m pip install -r requirements.txt
-cp .env.example .env # Configure your keys here
+cp .env.example .env
+# Configure environment variables in .env
 ```
 
-### Running the System
+### Usage
 ```bash
 # Run tests and linter
 make lint
@@ -135,3 +115,13 @@ python agent.py -q "What is RRF and how does cross-encoder reranking improve it?
 # Test the Live Faithfulness Guardrail with a hallucination-inducing prompt
 python agent.py -q "What is the capital of France?" --use-guardrail
 ```
+
+---
+
+## 5. Future Scalability
+
+To transition from this prototype to a distributed enterprise environment:
+1. **Frontend / API:** Replace the single-threaded Gradio interface with a dedicated frontend (Next.js) and a highly concurrent backend (FastAPI).
+2. **Lexical Index:** Replace the in-memory `rank_bm25` index with a distributed search cluster (Elasticsearch or OpenSearch).
+3. **Vector Database:** Migrate from local ChromaDB to a managed, distributed vector store (Pinecone, Milvus, Qdrant).
+4. **GPU Inference:** Move the Cross-Encoder off the local CPU to a dedicated GPU instance (NVIDIA Triton or vLLM).
