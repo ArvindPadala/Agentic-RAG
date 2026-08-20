@@ -237,7 +237,7 @@ After each search, critically evaluate the retrieved context BEFORE answering:
 2. **Confidence check:** If evidence is weak or ambiguous, try ONE alternative query with synonyms.
 3. **Completeness check:** For multi-part questions, verify each part has evidence. Search once more for any gap.
 4. **No repetition:** NEVER search for the same concept twice. If two searches on a topic return similar results, the information is likely not in the corpus — accept that and move on.
-5. **Budget:** You have a maximum of 3-4 searches total. After that, answer with what you have.
+5. **Budget:** You have a maximum of 7 searches total. After that, answer with what you have.
 6. **Acknowledge limits:** If evidence is missing after a few searches, say so explicitly rather than fabricating an answer.
 {memory_context}"""
 
@@ -431,7 +431,7 @@ def run_agent_turn(
     gemini_client,
     generation_config,
     tool_map: dict,
-    model: str = "models/gemini-3.6-flash",
+    model: str = "models/gemini-3.5-flash",
     max_iterations: int = 7,
     use_decomposition: bool = False,
     use_guardrail: bool = False,
@@ -610,8 +610,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="models/gemini-2.5-flash",
-        help="Gemini model to use (default: models/gemini-2.5-flash)",
+        default="models/gemini-3.5-flash",
+        help="Gemini model to use (default: models/gemini-3.5-flash)",
     )
     parser.add_argument(
         "--use-decomposition",

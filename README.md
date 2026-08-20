@@ -10,6 +10,8 @@ pinned: false
 
 # Agentic-RAG: Production-Ready Retrieval with Visual Grounding
 
+🚀 **Live Deployment:** [Try it on Hugging Face Spaces!](https://huggingface.co/spaces/ArvindPadala/Agentic-Document-RAG)
+
 > A comprehensive, production-grade Agentic RAG (Retrieval-Augmented Generation) pipeline. This system moves beyond basic vector search by implementing **Elite Hybrid Search (Vector + BM25 + Cross-Encoder Reranking)**, query decomposition, self-corrective retrieval, a live faithfulness guardrail, layout-aware document parsing, a resilient LLM routing system, and automated evaluation pipelines.
 
 ---
@@ -42,7 +44,7 @@ Raw user questions are often vague or multi-part. Before hitting the search inde
 Instead of a passive prompt chain or a fragile `while` loop, the core ReAct Agent is orchestrated using a **LangGraph StateGraph**. The Gemini model is provided a `search_knowledge_base` tool and the decomposed sub-queries. The state machine autonomously decides *whether* to search, *what* queries to formulate, and routes between nodes (`call_llm`, `execute_tools`, `run_guardrail`) until it has enough information to generate a final answer.
 
 ### 5. Self-Correction & Parallel Execution
-The agent loop runs up to 10 iterations. After each retrieval, the agent evaluates its own context against a 5-point **Self-Correction Protocol** embedded in the system prompt.
+The agent loop runs up to 7 iterations. After each retrieval, the agent evaluates its own context against a 6-point **Self-Correction Protocol** embedded in the system prompt.
 If the agent requests multiple tools at once (e.g., following Query Decomposition), the LangGraph `execute_tools` node uses a `ThreadPoolExecutor` to run the I/O-heavy ChromaDB/S3 searches concurrently, drastically reducing latency.
 A synthesis nudge on the penultimate iteration prevents the agent from exhausting all iterations on tool calls.
 

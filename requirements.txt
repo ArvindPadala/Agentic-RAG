@@ -12,7 +12,6 @@ langsmith>=0.1.0
 
 # Vector DB + Local Embeddings
 chromadb>=0.5
-sentence-transformers>=2.7
 
 # Gradio UI
 gradio>=6.0
