@@ -21,6 +21,7 @@ from agent import (
     run_agent_turn,
 )
 import re
+import time
 import argparse
 import requests
 
@@ -203,6 +204,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
         history = history + [{"role": "user", "content": user_message}]
 
         # Run the agent
+        start_time = time.time()
         try:
             raw_response = run_agent_turn(
                 user_message=user_message,
@@ -214,6 +216,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
                 use_decomposition=use_decomposition,
                 use_guardrail=use_guardrail,
             )
+            elapsed_time = time.time() - start_time
         except Exception as e:
             if is_rate_limit_error(e):
                 error_msg = (
@@ -250,6 +253,9 @@ def make_chat_fn(gemini_client, memory, memory_file,
 
         # Clean raw URLs from the visible response text
         display_response = clean_response(raw_response)
+
+        # Append processing time
+        display_response += f"\n\n*(Processed in {elapsed_time:.2f}s)*"
 
         # Append assistant message in Gradio 6.x messages format
         history = history + \
@@ -299,34 +305,21 @@ def build_ui(gemini_client, memory, memory_file,
 
         # ── Header ────────────────────────────────────────────────────────
         with gr.Row(elem_id="header"):
-            with gr.Column(scale=4):
+            with gr.Column(scale=1):
                 gr.Markdown(
                     """
                     # 📄 Document RAG Agent
                     *Powered by Gemini · ChromaDB · LandingAI ADE*
                     """
                 )
-            with gr.Column(scale=2):
-                search_type_toggle = gr.Radio(
-                    choices=[
-                        "Standard Vector Search",
-                        "Agentic Hybrid Search (RRF)",
-                        "Elite Hybrid Search (RRF + Reranker)"
-                    ],
-                    value="Elite Hybrid Search (RRF + Reranker)",
-                    label="🔍 Retrieval Engine",
-                    interactive=True,
-                    info="Toggle between semantic search, BM25+Vector fusion, or 2-stage Cross-Encoder reranking.",
-                )
-                decomp_toggle = gr.Checkbox(
-                    label="☑️ Enable Query Decomposition (Pre-processing)",
-                    value=False,
-                    info="Use a fast LLM to break down complex multi-part questions into specific sub-queries before searching."
-                )
-                guardrail_toggle = gr.Checkbox(
-                    label="🛡️ Enable Live Faithfulness Guardrail",
-                    value=False,
-                    info="Runs an LLM-as-a-judge on the final answer to warn if it hallucinated facts not in the retrieved documents."
+            with gr.Column(scale=1):
+                gr.Markdown(
+                    """
+                    **Quick Start:**
+                    1. 🔍 **Query**: Ask a question below to search.
+                    2. 📄 **Upload**: Add new documents in Tab 2.
+                    3. 🏗️ **Architecture**: Explore the system in Tab 3.
+                    """
                 )
 
         # ── Main layout ────────────────────────────────────────────────
@@ -334,58 +327,76 @@ def build_ui(gemini_client, memory, memory_file,
             # ── TAB 1: Chat ────────────────────────────────────────────────
             with gr.Tab("💬 Chat"):
                 with gr.Row():
-                    # ── LEFT: Chat ───────────────────────────────────────────
-                    with gr.Column(scale=3, elem_classes="chat-col"):
-                        chatbot = gr.Chatbot(
-                            label="Conversation",
-                            height=480,
-                            render_markdown=True,
-                            avatar_images=(
-                                None,
-                                "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg"),
-                        )
-
-                        with gr.Row():
-                            user_input = gr.Textbox(
-                                placeholder="Ask about your documents… (e.g. 'What was the Q3 revenue?')",
-                                show_label=False,
-                                lines=2,
-                                scale=5,
+                    # ── LEFT SIDEBAR (Settings & Use Cases) ─────────────────────
+                    with gr.Column(scale=1, elem_classes="sidebar"):
+                        gr.Markdown("### ⚙️ Advanced Settings")
+                        with gr.Column(elem_classes="settings-col"):
+                            search_type_toggle = gr.Radio(
+                                choices=[
+                                    "Standard Vector Search",
+                                    "Agentic Hybrid Search (RRF)",
+                                    "Elite Hybrid Search (RRF + Reranker)"
+                                ],
+                                value="Elite Hybrid Search (RRF + Reranker)",
+                                label="🔍 Retrieval Engine",
+                                interactive=True,
                             )
-                            send_btn = gr.Button(
-                                "Send →", variant="primary", scale=1, elem_id="send-btn")
-
+                            decomp_toggle = gr.Checkbox(
+                                label="☑️ Enable Query Decomposition",
+                                value=False,
+                            )
+                            guardrail_toggle = gr.Checkbox(
+                                label="🛡️ Enable Live Guardrail",
+                                value=False,
+                            )
+                            
+                        gr.Markdown("### 💡 Highlighted Use Cases")
+                        with gr.Column(elem_classes="use-case-card"):
+                            gr.Markdown("**Query Decomposition**\n*How to test:* Enable **Query Decomposition** above. Watch the agent split the question.")
+                            btn_case1 = gr.Button("Try: What value was used for label smoothing...", size="sm", variant="secondary")
+                        with gr.Column(elem_classes="use-case-card"):
+                            gr.Markdown("**Mathematical Grounding**\n*How to test:* Ensure **Elite Hybrid Search** is selected. It will extract math formulas visually.")
+                            btn_case2 = gr.Button("Try: What are the dimension values for $d_k$ and $d_v$?", size="sm", variant="secondary")
+                        with gr.Column(elem_classes="use-case-card"):
+                            gr.Markdown("**Live Guardrail**\n*How to test:* Enable **Live Guardrail** above. It will refuse this out-of-domain question safely.")
+                            btn_case3 = gr.Button("Try: What is the capital of France?", size="sm", variant="secondary")
+        
+                        with gr.Accordion("🧠 Agent Memory", open=False):
+                            memory_display = gr.Markdown(format_memory_status(memory))
+        
+                    # ── RIGHT CONTENT (Chat area) ────────────────────────────────
+                    with gr.Column(scale=3):
                         with gr.Row():
-                            clear_btn = gr.Button("🗑️ Clear Chat", size="sm")
-                            save_btn = gr.Button(
-                                "💾 Save Memory", size="sm", variant="secondary")
-                            save_status = gr.Textbox(show_label=False, interactive=False,
-                                                     placeholder="", scale=2, lines=1)
-
-                    # ── RIGHT: Visual Grounding ──────────────────────────────
-                    with gr.Column(scale=2, elem_classes="image-col"):
-                        gr.Markdown(
-                            "### 🔍 Visual Grounding\n*Highlighted PDF regions from last answer*")
-                        image_gallery = gr.HTML(
-                            value="<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>",
-                            elem_id="visual-grounding-html"
-                        )
-
-                # ── Bottom: Memory status ────────────────────────────────────
-                with gr.Accordion("🧠 Agent Memory", open=False):
-                    memory_display = gr.Markdown(format_memory_status(memory))
-
-                # ── Example questions ────────────────────────────────────────
-                gr.Examples(
-                    examples=[
-                        ["What are the common symptoms of a cold?"],
-                        ["Does Vitamin C prevent the common cold?"],
-                        ["What is Reciprocal Rank Fusion (RRF)?"],
-                        ["Explain the self-attention mechanism in Transformers."],
-                    ],
-                    inputs=user_input,
-                    label="Try these questions:",
-                )
+                            with gr.Column(scale=3, elem_classes="chat-col"):
+                                chatbot = gr.Chatbot(
+                                    label="Conversation",
+                                    height=520,
+                                    render_markdown=True,
+                                    avatar_images=(
+                                        None,
+                                        "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg"),
+                                )
+        
+                                with gr.Row():
+                                    user_input = gr.Textbox(
+                                        placeholder="Ask about your documents... (e.g. 'What was the Q3 revenue?')",
+                                        show_label=False,
+                                        lines=2,
+                                        scale=5,
+                                    )
+                                    send_btn = gr.Button("Send →", variant="primary", scale=1, elem_id="send-btn")
+        
+                                with gr.Row():
+                                    clear_btn = gr.Button("🗑️ Clear Chat", size="sm")
+                                    save_btn = gr.Button("💾 Save Memory", size="sm", variant="secondary")
+                                    save_status = gr.Textbox(show_label=False, interactive=False, placeholder="", scale=2, lines=1)
+        
+                            with gr.Column(scale=2, elem_classes="image-col"):
+                                gr.Markdown("### 🔍 Visual Grounding\n*Highlighted PDF regions from last answer*")
+                                image_gallery = gr.HTML(
+                                    value="<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>",
+                                    elem_id="visual-grounding-html"
+                                )
 
             # ── TAB 2: Manage Knowledge Base ─────────────────────────────────
             with gr.Tab("📄 Manage Knowledge Base"):
@@ -426,6 +437,10 @@ def build_ui(gemini_client, memory, memory_file,
                     gr.Markdown("Evaluation metrics not found.")
 
         # ── Event wiring ───────────────────────────────────────────────────
+
+        btn_case1.click(fn=lambda: "What specific value was used for label smoothing during training, and what were its effects on the model's metrics?", inputs=None, outputs=user_input)
+        btn_case2.click(fn=lambda: "What are the specific dimension values used for $d_k$ and $d_v$ in each of the parallel attention layers?", inputs=None, outputs=user_input)
+        btn_case3.click(fn=lambda: "What is the capital of France?", inputs=None, outputs=user_input)
 
         def submit(message, history, conv_history,
                    search_type, use_decomp, use_guardrail):
@@ -570,13 +585,18 @@ def main():
         show_error=True,
         strict_cors=False,
         ssr_mode=False,
-        theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate"),
+        theme=gr.themes.Monochrome(primary_hue="slate", neutral_hue="slate"),
         css="""
-            #header { text-align: center; padding: 10px 0 4px; }
-            #header h1 { font-size: 1.8em; margin-bottom: 2px; }
-            #header p  { color: #64748b; margin: 0; font-size: 0.95em; }
-            .image-col { border-left: 1px solid #e2e8f0; padding-left: 12px; }
-            #send-btn  { min-width: 80px; }
+            #header { text-align: center; padding: 20px 0; border-bottom: 1px solid #eaeaea; margin-bottom: 20px; }
+            #header h1 { font-size: 2.2em; margin-bottom: 4px; font-weight: 700; letter-spacing: -0.5px; }
+            #header p  { color: #64748b; margin: 0; font-size: 1.05em; }
+            .image-col { border-left: 1px solid #f1f5f9; padding-left: 20px; }
+            #send-btn  { min-width: 80px; font-weight: bold; }
+            .settings-row { background-color: #f8fafc; padding: 10px 15px; border-radius: 6px; border: 1px solid #e2e8f0; margin-top: 5px; }
+            .use-case-row { margin-bottom: 20px; }
+            .use-case-card { background-color: #ffffff; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; text-align: center; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1); }
+            .use-case-card p { margin-bottom: 10px; font-size: 0.9em; color: #475569; }
+            .sidebar { background-color: #f8fafc; padding: 20px; border-right: 1px solid #e2e8f0; }
         """,
     )
 
