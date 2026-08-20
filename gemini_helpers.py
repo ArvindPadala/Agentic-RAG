@@ -69,8 +69,7 @@ def init_chroma_collection(
 
     count = collection.count()
     if count > 0:
-        logger.info(f"✅ Reopened existing collection '{
-                    collection_name}' ({count} documents already indexed)")
+        logger.info(f"✅ Reopened existing collection '{collection_name}' ({count} documents already indexed)")
     else:
         logger.info(f"✅ Created new empty collection '{collection_name}'")
 
@@ -199,11 +198,7 @@ def embed_and_index_chunks(
             c for c in valid_chunks if c.get(
                 "chunk_id",
                 "") not in existing_ids]
-        logger.info(
-            f"   └─ {
-                len(new_chunks)} new chunks to add (skipping {
-                len(valid_chunks) -
-                len(new_chunks)} already indexed)")
+        logger.info(f"   └─ {len(new_chunks)} new chunks to add (skipping {len(valid_chunks) - len(new_chunks)} already indexed)")
     else:
         new_chunks = valid_chunks
 
@@ -227,9 +222,7 @@ def embed_and_index_chunks(
         })
 
     # Add to ChromaDB — NO embeddings= arg → ChromaDB auto-embeds locally
-    logger.info(
-        f"\n🧠 Embedding {
-            len(new_chunks)} chunks locally (no API call)...")
+    logger.info(f"\n🧠 Embedding {len(new_chunks)} chunks locally (no API call)...")
     collection.add(
         ids=ids,
         documents=texts,   # ChromaDB embeds these automatically

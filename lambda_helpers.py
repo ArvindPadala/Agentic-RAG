@@ -160,8 +160,7 @@ def create_deployment_package(
             if "darwin" in so_files:
                 raise RuntimeError(
                     f"❌ macOS binary still in package: {so_files}")
-            logger.info(f"   ✅ Linux binary confirmed: {
-                        so_files.split(chr(10))[0].split('/')[-1]}")
+            logger.info(f"   ✅ Linux binary confirmed: {so_files.split(chr(10))[0].split('/')[-1]}")
 
     # Copy source files
     for source_file in source_files:
@@ -355,9 +354,7 @@ def invoke_lambda_sync(
     elapsed = time.time() - start_time
 
     if status_code == 200:
-        logger.info(
-            f"✅ Lambda completed successfully in {
-                elapsed:.1f} seconds")
+        logger.info(f"✅ Lambda completed successfully in {elapsed:.1f} seconds")
     else:
         logger.info(f"⚠️ Lambda returned status code: {status_code}")
 
@@ -405,10 +402,7 @@ def monitor_s3_folder(
     logger.info(f"   Found {len(files)} files")
 
     if expected_count and len(files) < expected_count:
-        logger.info(
-            f"   ⏳ Waiting for {
-                expected_count -
-                len(files)} more files...")
+        logger.info(f"   ⏳ Waiting for {expected_count - len(files)} more files...")
 
     return files
 
@@ -477,8 +471,7 @@ def upload_folder_to_s3(
 
     # Summary
     if skipped > 0:
-        logger.info(f"✅ Uploaded {uploaded} files, skipped {
-                    skipped} existing files")
+        logger.info(f"✅ Uploaded {uploaded} files, skipped {skipped} existing files")
     else:
         logger.info(f"✅ Uploaded {uploaded} files")
 
@@ -612,12 +605,9 @@ def monitor_lambda_processing(
             logger.info("\n   Files by folder:")
             for folder, files in sorted(folders.items()):
                 if folder == "root":
-                    logger.info(
-                        f"   {output_prefix} (root): {
-                            len(files)} files")
+                    logger.info(f"   {output_prefix} (root): {len(files)} files")
                 else:
-                    logger.info(f"   {output_prefix}{
-                                folder}/: {len(files)} files")
+                    logger.info(f"   {output_prefix}{folder}/: {len(files)} files")
 
             # Option to show all files
             show_all = input(

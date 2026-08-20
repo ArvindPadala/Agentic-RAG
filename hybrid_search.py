@@ -16,8 +16,7 @@ def get_reranker():
         import logging
         logging.info(
             "⏳ Loading Cross-Encoder reranker model (this may take a moment on first run)...")
-        _RERANKER_MODEL = CrossEncoder(
-            'cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+        _RERANKER_MODEL = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512, device='cpu')
     return _RERANKER_MODEL
 
 

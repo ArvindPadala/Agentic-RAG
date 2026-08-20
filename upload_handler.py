@@ -29,8 +29,7 @@ def make_upload_fn(s3_client, bucket_name, collection):
             s3_client.upload_file(str(p), bucket_name, s3_key)
 
             filename_without_ext = p.stem
-            grounding_key = f"output/documents_grounding/{
-                filename_without_ext}_grounding.json"
+            grounding_key = f"output/documents_grounding/{filename_without_ext}_grounding.json"
 
             yield log(f"[{i + 1}/{total_files}] ⏳ Waiting for LandingAI ADE to process (this may take 1-3 minutes)...")
 
@@ -59,8 +58,7 @@ def make_upload_fn(s3_client, bucket_name, collection):
             chunks = load_chunks_from_s3(
                 s3_client=s3_client,
                 bucket=bucket_name,
-                chunks_prefix=f"output/documents_chunks/{
-                    filename_without_ext}_"
+                chunks_prefix=f"output/documents_chunks/{filename_without_ext}_"
             )
 
             yield log(f"[{i + 1}/{total_files}] 🧠 Indexing {len(chunks)} chunks into ChromaDB...")

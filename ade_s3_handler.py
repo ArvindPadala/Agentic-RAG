@@ -98,8 +98,7 @@ def ade_handler(event: dict, context) -> dict:
 
         # Build output key preserving folder structure
         if subfolder and subfolder != '.':
-            output_key = f"{OUTPUT_FOLDER}{
-                subfolder}/{filename_without_ext}.md"
+            output_key = f"{OUTPUT_FOLDER}{subfolder}/{filename_without_ext}.md"
         else:
             output_key = f"{OUTPUT_FOLDER}{filename_without_ext}.md"
 
@@ -130,8 +129,7 @@ def ade_handler(event: dict, context) -> dict:
             tmp_path.write_bytes(file_bytes)
 
             # Start parsing
-            logger.info(f"🤖 Starting ADE parsing for {
-                        doc_id} (model={ADE_MODEL})")
+            logger.info(f"🤖 Starting ADE parsing for {doc_id} (model={ADE_MODEL})")
             response = client.parse(document=tmp_path, model=ADE_MODEL)
             markdown = response.markdown
             logger.info(f"✅ Finished parsing document: {doc_id}")
@@ -288,8 +286,7 @@ def ade_handler(event: dict, context) -> dict:
                         }
 
                         # Save individual chunk JSON
-                        chunk_key = f"{chunks_folder}{
-                            filename_without_ext}_{chunk_id}.json"
+                        chunk_key = f"{chunks_folder}{filename_without_ext}_{chunk_id}.json"
                         s3.put_object(
                             Bucket=bucket,
                             Key=chunk_key,
@@ -314,8 +311,7 @@ def ade_handler(event: dict, context) -> dict:
                 "status": "success"
             })
 
-            logger.info(f"🎉 Completed pipeline for {doc_id} → {
-                        output_key} (clean name: {filename_without_ext}.md)")
+            logger.info(f"🎉 Completed pipeline for {doc_id} → {output_key} (clean name: {filename_without_ext}.md)")
 
         except Exception as e:
             logger.info(f"❌ Error processing {doc_id}: {e}")

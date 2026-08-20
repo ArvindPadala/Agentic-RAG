@@ -28,4 +28,4 @@ COPY . .
 EXPOSE 7860
 
 # Command to run the application
-CMD ["python", "app.py", "--port", "7860", "--share"]
+CMD ["python", "app.py", "--port", "7860" ]

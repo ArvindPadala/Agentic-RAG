@@ -22,6 +22,15 @@ from agent import (
 )
 import re
 import argparse
+import requests
+
+try:
+    import spaces
+    gpu_decorator = spaces.GPU
+except ImportError:
+    def gpu_decorator(func):
+        return func
+
 import gradio as gr
 from config import settings
 from utils.logger import get_logger
@@ -124,8 +133,8 @@ def format_memory_status(memory: dict) -> str:
 # ── Available Gemini models ──────────────────────────────────────────────────
 # Listed in order of capability. Free-tier daily limits shown for reference.
 AVAILABLE_MODELS = [
-    ("Gemini 3.5 Flash  (Recommended)", "models/gemini-3.5-flash"),
-    ("Gemini 3.5 Flash-Lite  (Recommended)", "models/gemini-3.5-flash-lite"),
+    ("Gemini 3.5 Flash  (Recommended)", "models/gemini-3.6-flash"),
+    ("Gemini 3.5 Flash-Lite  (Recommended)", "models/gemini-3.6-flash-lite"),
     ("Gemini Flash Latest  (Latest Free)", "models/gemini-flash-latest"),
 ]
 MODEL_LABELS = [label for label, _ in AVAILABLE_MODELS]
@@ -188,7 +197,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
 
         # 4. Use the resilient auto-routing from GeminiRouter
         # GeminiRouter handles the actual fallback logic
-        model_id = "models/gemini-3.5-flash"
+        model_id = "models/gemini-3.6-flash"
 
         # Append user message in Gradio 6.x messages format
         history = history + [{"role": "user", "content": user_message}]
@@ -235,8 +244,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
         # Build HTML for images
         html_content = ""
         for url in image_urls:
-            html_content += f'<div style="margin-bottom:15px;"><img src="{
-                url}" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
+            html_content += f'<div style="margin-bottom:15px;"><img src="{url}" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
         if not html_content:
             html_content = "<div style='text-align:center; color:#888; padding:20px;'>No visual grounding for this response.</div>"
 
@@ -399,12 +407,37 @@ def build_ui(gemini_client, memory, memory_file,
                     outputs=[upload_status],
                 )
 
+            # ── TAB 3: Architecture & Evaluation ─────────────────────────────
+            with gr.Tab("🏗️ Architecture & Evaluation"):
+                gr.Markdown("## System Architecture")
+                gr.Markdown(
+                    "This system implements an advanced, production-grade Retrieval-Augmented Generation (RAG) architecture.\n\n"
+                    "- **Agent Orchestration**: Built using **LangGraph** as a cyclic state machine. Handles routing, tools, and fallback loops.\n"
+                    "- **Retrieval Engine**: A 3-stage pipeline combining semantic vector search (ChromaDB), keyword search (BM25), and cross-encoder reranking (ms-marco-MiniLM).\n"
+                    "- **Visual Grounding**: Document ingestion uses **LandingAI ADE** via AWS Lambda to extract layout-aware bounding boxes and render visual citations instantly.\n"
+                    "- **Self-Correction & Guardrails**: Features a dynamic Query Optimizer and a Live Faithfulness Guardrail to intercept hallucinations before they reach the user.\n"
+                )
+
+                try:
+                    with open("EVALUATION_REPORT.md", "r") as f:
+                        eval_content = f.read()
+                    gr.Markdown(f"## Evaluation Metrics\n\n{eval_content}")
+                except Exception:
+                    gr.Markdown("Evaluation metrics not found.")
+
         # ── Event wiring ───────────────────────────────────────────────────
 
         def submit(message, history, conv_history,
                    search_type, use_decomp, use_guardrail):
             return chat_fn(message, history, conv_history,
                            search_type, use_decomp, use_guardrail)
+
+        # ── Dummy GPU Function to satisfy ZeroGPU startup checks ──────────
+        @gpu_decorator
+        def dummy_gpu_fn():
+            return None
+
+        demo.load(fn=dummy_gpu_fn, inputs=None, outputs=None)
 
         # Sync toggle → search state
         search_type_toggle.change(
@@ -504,7 +537,7 @@ def main():
         help="Memory JSON file")
     parser.add_argument(
         "--model",
-        default="models/gemini-3.5-flash",
+        default="models/gemini-3.6-flash",
         help="Gemini model")
     args = parser.parse_args()
 
@@ -529,6 +562,7 @@ def main():
         collection=collection,
         bucket_name=settings.S3_BUCKET_NAME
     )
+    demo.queue(default_concurrency_limit=2)
     demo.launch(
         server_name="0.0.0.0",
         server_port=args.port,

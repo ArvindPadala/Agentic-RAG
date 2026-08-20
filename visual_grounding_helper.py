@@ -344,8 +344,7 @@ def get_or_create_annotated_image(
     clean_chunk_id = chunk_id.replace(
         '<a id=', '').replace(
         '></a>', '').strip('"')
-    annotation_key = f"annotations/{Path(source_pdf_key).stem}_p{
-        page_num}_{clean_chunk_id}.png"
+    annotation_key = f"annotations/{Path(source_pdf_key).stem}_p{page_num}_{clean_chunk_id}.png"
 
     # Check if annotation already exists
     if not force_recreate:

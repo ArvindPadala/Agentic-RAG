@@ -271,9 +271,7 @@ def build_agent_graph():
         model = state["model"]
 
         if iteration > 0:
-            logger.info(
-                f"   🔄 Reflection iteration {
-                    iteration + 1}/{max_iterations} — agent is refining its search")
+            logger.info(f"   🔄 Reflection iteration {iteration + 1}/{max_iterations} — agent is refining its search")
 
         if iteration == max_iterations - 2:
             conversation_history.append(
@@ -325,8 +323,8 @@ def build_agent_graph():
             tool_name = fc.name
             tool_args = dict(fc.args) if fc.args else {}
 
-            logger.info(f"   🔧 {tool_name}({', '.join(
-                f'{k}={repr(v)}' for k, v in tool_args.items())})")
+            args_str = ', '.join('{}={}'.format(k, repr(v)) for k, v in tool_args.items())
+            logger.info(f"   🔧 {tool_name}({args_str})")
 
             if tool_name in tool_map:
                 try:
@@ -388,8 +386,7 @@ def build_agent_graph():
                 final_text, context_chunks, gemini_client)
 
             if not is_faithful:
-                final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {
-                    reason})"
+                final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {reason})"
 
         conversation_history[-1] = genai_types.Content(
             role="model", parts=[genai_types.Part(text=final_text)])
@@ -435,7 +432,7 @@ def run_agent_turn(
     gemini_client,
     generation_config,
     tool_map: dict,
-    model: str = "models/gemini-3.5-flash",
+    model: str = "models/gemini-3.6-flash",
     max_iterations: int = 7,
     use_decomposition: bool = False,
     use_guardrail: bool = False,
@@ -531,9 +528,7 @@ def run_chat(gemini_client, generation_config, tool_map: dict, memory: dict,
 
             conversation_num += 1
             logger.info(f"\n{'─' * 70}")
-            logger.info(
-                f"Question #{conversation_num} [{
-                    datetime.now().strftime('%H:%M:%S')}]")
+            logger.info(f"Question #{conversation_num} [{datetime.now().strftime('%H:%M:%S')}]")
             logger.info(f"  \"{user_input}\"")
             logger.info(f"{'─' * 70}")
             logger.info("\nAgent Response (processing...)\n")
@@ -616,8 +611,8 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="models/gemini-3.5-flash",
-        help="Gemini model to use (default: models/gemini-3.5-flash)",
+        default="models/gemini-3.6-flash",
+        help="Gemini model to use (default: models/gemini-3.6-flash)",
     )
     parser.add_argument(
         "--use-decomposition",
