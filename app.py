@@ -300,7 +300,7 @@ def build_ui(gemini_client, memory, memory_file,
             with gr.Column(scale=1):
                 gr.Markdown(
                     """
-                    # 📄 Document RAG Agent
+                    # Document RAG Agent
                     *Powered by Gemini · ChromaDB · LandingAI ADE*
                     """
                 )
@@ -308,20 +308,20 @@ def build_ui(gemini_client, memory, memory_file,
                 gr.Markdown(
                     """
                     **Quick Start:**
-                    1. 🔍 **Query**: Ask a question below to search.
-                    2. 📄 **Upload**: Add new documents in Tab 2.
-                    3. 🏗️ **Architecture**: Explore the system in Tab 3.
+                    1. **Query**: Ask a question below to search.
+                    2. **Upload**: Add new documents in Tab 2.
+                    3. **Architecture**: Explore the system in Tab 3.
                     """
                 )
 
         # ── Main layout ────────────────────────────────────────────────
         with gr.Tabs():
             # ── TAB 1: Chat ────────────────────────────────────────────────
-            with gr.Tab("💬 Chat"):
+            with gr.Tab("Chat"):
                 with gr.Row():
                     # ── LEFT SIDEBAR (Settings & Use Cases) ─────────────────────
                     with gr.Column(scale=1, elem_classes="sidebar"):
-                        gr.Markdown("### ⚙️ Advanced Settings")
+                        gr.Markdown("### Advanced Settings")
                         with gr.Column(elem_classes="settings-col"):
                             search_type_toggle = gr.Radio(
                                 choices=[
@@ -330,19 +330,19 @@ def build_ui(gemini_client, memory, memory_file,
                                     "Elite Hybrid Search (RRF + Reranker)"
                                 ],
                                 value="Elite Hybrid Search (RRF + Reranker)",
-                                label="🔍 Retrieval Engine",
+                                label="Retrieval Engine",
                                 interactive=True,
                             )
                             decomp_toggle = gr.Checkbox(
-                                label="☑️ Enable Query Decomposition",
+                                label="Enable Query Decomposition",
                                 value=False,
                             )
                             guardrail_toggle = gr.Checkbox(
-                                label="🛡️ Enable Live Guardrail",
+                                label="Enable Live Guardrail",
                                 value=False,
                             )
                             
-                        gr.Markdown("### 💡 Highlighted Use Cases")
+                        gr.Markdown("### Highlighted Use Cases")
                         with gr.Column(elem_classes="use-case-card"):
                             gr.Markdown("**Query Decomposition**\n*How to test:* Enable **Query Decomposition** above. Watch the agent split the question.")
                             btn_case1 = gr.Button("Try: What value was used for label smoothing...", size="sm", variant="secondary")
@@ -353,7 +353,7 @@ def build_ui(gemini_client, memory, memory_file,
                             gr.Markdown("**Live Guardrail**\n*How to test:* Enable **Live Guardrail** above. It will refuse this out-of-domain question safely.")
                             btn_case3 = gr.Button("Try: What is the capital of France?", size="sm", variant="secondary")
         
-                        with gr.Accordion("🧠 Agent Memory", open=False):
+                        with gr.Accordion("Agent Memory", open=False):
                             memory_display = gr.Markdown(format_memory_status(memory))
         
                     # ── RIGHT CONTENT (Chat area) ────────────────────────────────
@@ -379,12 +379,12 @@ def build_ui(gemini_client, memory, memory_file,
                                     send_btn = gr.Button("Send →", variant="primary", scale=1, elem_id="send-btn")
         
                                 with gr.Row():
-                                    clear_btn = gr.Button("🗑️ Clear Chat", size="sm")
-                                    save_btn = gr.Button("💾 Save Memory", size="sm", variant="secondary")
+                                    clear_btn = gr.Button(" Clear Chat", size="sm")
+                                    save_btn = gr.Button(" Save Memory", size="sm", variant="secondary")
                                     save_status = gr.Textbox(show_label=False, interactive=False, placeholder="", scale=2, lines=1)
         
                             with gr.Column(scale=2, elem_classes="image-col"):
-                                gr.Markdown("### 🔍 Visual Grounding\n*Highlighted PDF regions from last answer*")
+                                gr.Markdown("### Visual Grounding\n*Highlighted PDF regions from last answer*")
                                 image_gallery = gr.HTML(
                                     value="<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>",
                                     elem_id="visual-grounding-html"
@@ -592,7 +592,7 @@ def main():
         help="Gemini model")
     args = parser.parse_args()
 
-    logger.info("\n🚀 Starting Document RAG Agent UI...")
+    logger.info("\n Starting Document RAG Agent UI...")
     logger.info("─" * 40)
 
     gemini_client = create_gemini_router(settings.GEMINI_API_KEYS)
@@ -601,9 +601,9 @@ def main():
     memory = load_memory(args.memory_file)
 
     logger.info("─" * 40)
-    logger.info(f"✅ All systems ready — launching Gradio on port {args.port}")
+    logger.info(f" All systems ready — launching Gradio on port {args.port}")
     if args.share:
-        logger.info("🌐 Share link will be printed below (valid 72 hours)")
+        logger.info(" Share link will be printed below (valid 72 hours)")
 
     demo = build_ui(
         gemini_client=gemini_client,
