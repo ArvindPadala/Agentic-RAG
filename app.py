@@ -32,6 +32,8 @@ except ImportError:
     def gpu_decorator(func):
         return func
 
+
+
 import gradio as gr
 from config import settings
 from utils.logger import get_logger
@@ -130,16 +132,6 @@ def format_memory_status(memory: dict) -> str:
         lines.append("\n*No previous sessions yet.*")
     return "\n".join(lines)
 
-
-# ── Available Gemini models ──────────────────────────────────────────────────
-# Listed in order of capability. Free-tier daily limits shown for reference.
-AVAILABLE_MODELS = [
-    ("Gemini 3.5 Flash  (Recommended)", "models/gemini-3.6-flash"),
-    ("Gemini 3.5 Flash-Lite  (Recommended)", "models/gemini-3.6-flash-lite"),
-    ("Gemini Flash Latest  (Latest Free)", "models/gemini-flash-latest"),
-]
-MODEL_LABELS = [label for label, _ in AVAILABLE_MODELS]
-MODEL_IDS = {label: mid for label, mid in AVAILABLE_MODELS}
 
 # We initialize the search UI state to match the radio button's default value
 DEFAULT_SEARCH_LABEL = "Elite Hybrid Search (RRF + Reranker)"
@@ -379,7 +371,7 @@ def build_ui(gemini_client, memory, memory_file,
         
                                 with gr.Row():
                                     user_input = gr.Textbox(
-                                        placeholder="Ask about your documents... (e.g. 'What was the Q3 revenue?')",
+                                        placeholder="Ask about your documents... (e.g. 'What is the function of the transformer encoder?')",
                                         show_label=False,
                                         lines=2,
                                         scale=5,
@@ -438,9 +430,14 @@ def build_ui(gemini_client, memory, memory_file,
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        btn_case1.click(fn=lambda: "What specific value was used for label smoothing during training, and what were its effects on the model's metrics?", inputs=None, outputs=user_input)
-        btn_case2.click(fn=lambda: "What are the specific dimension values used for $d_k$ and $d_v$ in each of the parallel attention layers?", inputs=None, outputs=user_input)
-        btn_case3.click(fn=lambda: "What is the capital of France?", inputs=None, outputs=user_input)
+        def set_case_1():
+            return "What specific value was used for label smoothing during training, and what were its effects on the model's metrics?", True, False, True, False
+            
+        def set_case_2():
+            return "What are the specific dimension values used for $d_k$ and $d_v$ in each of the parallel attention layers?", False, False, False, False
+
+        def set_case_3():
+            return "What is the capital of France?", False, True, False, True
 
         def submit(message, history, conv_history,
                    search_type, use_decomp, use_guardrail):
@@ -453,6 +450,45 @@ def build_ui(gemini_client, memory, memory_file,
             return None
 
         demo.load(fn=dummy_gpu_fn, inputs=None, outputs=None)
+
+        # Wire Case 1
+        btn_case1.click(
+            fn=set_case_1,
+            outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
+        ).then(
+            fn=submit,
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display],
+        ).then(
+            fn=lambda: gr.update(value=""),
+            outputs=user_input,
+        )
+
+        # Wire Case 2
+        btn_case2.click(
+            fn=set_case_2,
+            outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
+        ).then(
+            fn=submit,
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display],
+        ).then(
+            fn=lambda: gr.update(value=""),
+            outputs=user_input,
+        )
+
+        # Wire Case 3
+        btn_case3.click(
+            fn=set_case_3,
+            outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
+        ).then(
+            fn=submit,
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display],
+        ).then(
+            fn=lambda: gr.update(value=""),
+            outputs=user_input,
+        )
 
         # Sync toggle → search state
         search_type_toggle.change(
