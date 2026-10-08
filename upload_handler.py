@@ -2,10 +2,16 @@ import time
 from pathlib import Path
 import gradio as gr
 from gemini_helpers import load_chunks_from_s3, embed_and_index_chunks
+from config import settings
 
 
-def make_upload_fn(s3_client, bucket_name, collection):
+def make_upload_fn(s3_client, bucket_name, collection, policy=None):
+    policy = policy or settings.ACCESS_POLICY
+
     def upload_and_index(file_paths, progress=gr.Progress()):
+        # Enforce before file access, progress, S3 writes, or parsing costs.
+        # Hiding the UI alone does not protect direct API/handler calls.
+        policy.require_local_mutation()
         if not file_paths:
             yield "⚠️ No files selected."
             return

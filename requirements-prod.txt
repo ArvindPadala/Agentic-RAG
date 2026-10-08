@@ -4,11 +4,12 @@ python-dotenv==1.0.1
 Pillow==10.4.0
 PyMuPDF==1.27.2
 requests==2.32.5
+cryptography==50.0.2
 
 # Gemini SDK & Routing
 google-genai==1.66.0
 tenacity==8.3.0
-langsmith==0.1.66
+langsmith==0.5.0
 
 # Vector DB + Local Embeddings
 chromadb==1.5.5
@@ -16,7 +17,6 @@ sentence-transformers==5.2.3
 
 # Gradio UI
 gradio==6.9.0
-rank_bm25>=0.2.2
-sentence-transformers>=3.0.0
-langgraph>=0.1.0
-langchain-core>=0.2.0
+rank_bm25==0.2.2
+langgraph==1.0.5
+langchain-core==1.5.3

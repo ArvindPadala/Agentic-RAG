@@ -5,6 +5,8 @@ Utilities for creating annotated images with bounding boxes from document chunks
 
 from typing import Dict, List, Optional
 import io
+import hashlib
+import json
 from pathlib import Path
 from utils.logger import get_logger
 
@@ -89,7 +91,13 @@ def extract_chunk_image(
 
     try:
         # Check if chunk image already exists
-        image_key = f"output/chunk_images/{source_document}_{chunk_id}.png"
+        # Different source keys/bounds must not share a cached citation image.
+        # This also avoids reusing legacy filename-only image objects.
+        identity = json.dumps(
+            [source_pdf_key, chunk_id, bbox, page_num, highlight, padding],
+            sort_keys=True)
+        image_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        image_key = f"output/chunk_images/{image_id}.png"
         try:
             s3_client.head_object(Bucket=bucket, Key=image_key)
             # Image exists, return presigned URL

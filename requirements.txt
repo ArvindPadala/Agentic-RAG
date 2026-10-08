@@ -4,6 +4,7 @@ python-dotenv>=1.0
 Pillow>=10.0
 PyMuPDF>=1.23
 requests>=2.31
+cryptography>=43.0.0
 
 # Gemini SDK & Routing
 google-genai>=1.0

@@ -1,11 +1,13 @@
 import os
 from dotenv import load_dotenv
 from utils.logger import get_logger
+from access_control import RuntimePolicy
 
 logger = get_logger("config")
 
 # Load environment variables from .env if present
-load_dotenv()
+if not os.environ.get("PYTHON_DOTENV_DISABLED"):
+    load_dotenv()
 
 
 class Config:
@@ -15,6 +17,27 @@ class Config:
     """
 
     def __init__(self):
+        # Fail closed on unknown modes. Local mode must never be hosted.
+        self.ACCESS_POLICY = RuntimePolicy(
+            self._get_optional("APP_MODE", "public_demo"))
+        self.ACCESS_POLICY.validate_launch(hosted=bool(os.environ.get("SPACE_ID")))
+
+        enabled = self._get_optional("SUPABASE_ENABLED", "false").lower()
+        if enabled not in {"true", "false"}:
+            raise ValueError("SUPABASE_ENABLED must be true or false")
+        self.SUPABASE_ENABLED = enabled == "true"
+        self.SUPABASE_URL = self._get_optional("SUPABASE_URL")
+        self.SUPABASE_PUBLISHABLE_KEY = self._get_optional("SUPABASE_PUBLISHABLE_KEY")
+        self.SESSION_COOKIE_KEY = self._get_optional("SESSION_COOKIE_KEY")
+        self.APP_PUBLIC_URL = self._get_optional("APP_PUBLIC_URL")
+        self.TURNSTILE_SITE_KEY = self._get_optional("TURNSTILE_SITE_KEY")
+        if self.SUPABASE_ENABLED:
+            if not self.ACCESS_POLICY.is_public:
+                raise ValueError("Supabase sessions require public_demo mode")
+            for name in ("SUPABASE_URL", "SUPABASE_PUBLISHABLE_KEY", "SESSION_COOKIE_KEY",
+                         "APP_PUBLIC_URL", "TURNSTILE_SITE_KEY"):
+                self._get_required(name)
+
         # API Keys
         self.GEMINI_API_KEY = self._get_required("GEMINI_API_KEY")
         self.GEMINI_API_KEY_2 = self._get_optional("GEMINI_API_KEY_2")
@@ -44,6 +67,12 @@ class Config:
         self.LANGCHAIN_API_KEY = self._get_optional("LANGCHAIN_API_KEY")
         self.LANGCHAIN_PROJECT = self._get_optional(
             "LANGCHAIN_PROJECT", "Agentic_RAG")
+        if self.ACCESS_POLICY.is_public:
+            # traceable decorators capture prompts, contexts, and histories.
+            # Anonymous sessions must not become remote conversation records.
+            os.environ["LANGCHAIN_TRACING_V2"] = "false"
+            os.environ["LANGSMITH_TRACING"] = "false"
+            self.LANGCHAIN_TRACING_V2 = "false"
 
     def _get_required(self, key: str) -> str:
         value = os.environ.get(key)
@@ -57,9 +86,4 @@ class Config:
 
 
 # Global config instance
-try:
-    settings = Config()
-except ValueError as e:
-    logger.critical(f"Configuration initialization failed: {e}")
-    # In a production app, we might exit here if imported at top level
-    # sys.exit(1)
+settings = Config()

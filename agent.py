@@ -84,7 +84,8 @@ def load_chroma_collection(collection_name: str,
 
 # ── 4. Search Tool ──────────────────────────────────────────────────────
 def build_search_tool(collection, gemini_client, s3_client, bucket: str,
-                      use_hybrid: bool = False, use_reranker: bool = False):
+                      use_hybrid: bool = False, use_reranker: bool = False,
+                      policy=None):
     """
     Build the search_knowledge_base function that the Gemini agent will call.
 
@@ -93,12 +94,15 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
       - The types.Tool declaration (for GENERATION_CONFIG)
     """
 
+    policy = policy or settings.ACCESS_POLICY
+    collection = policy.scope_collection(collection)
+
     def search_knowledge_base(query: str) -> str:
         """
         Search the document knowledge base.
         Returns text chunks with page numbers and visual reference image URLs.
         """
-        logger.info(f"   🔍 Querying ChromaDB for: '{query}'")
+        logger.info("Searching authorized document scope")
 
         if use_hybrid:
             from hybrid_search import search_chroma_hybrid
@@ -137,10 +141,12 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
             # Visual grounding: crop the PDF region and get a presigned URL
             cropped_image_url = None
             if source_doc and bucket and s3_client:
-                # Try the documents path
-                possible_keys = [
-                    f"input/documents/{source_doc}.pdf"
-                ]
+                # Public citations require an explicitly approved exact source
+                # key. Never guess a private PDF key from a filename stem.
+                source_key = result.get("source_pdf_key", "")
+                if not source_key and not policy.is_public:
+                    source_key = f"input/documents/{source_doc}.pdf"
+                possible_keys = [source_key] if source_key else []
 
                 for source_pdf_key in possible_keys:
                     try:
@@ -323,8 +329,7 @@ def build_agent_graph():
             tool_name = fc.name
             tool_args = dict(fc.args) if fc.args else {}
 
-            args_str = ', '.join('{}={}'.format(k, repr(v)) for k, v in tool_args.items())
-            logger.info(f"   🔧 {tool_name}({args_str})")
+            logger.info("Executing tool %s", tool_name)
 
             if tool_name in tool_map:
                 try:

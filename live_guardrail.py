@@ -71,9 +71,9 @@ def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: Ge
         reason = result.get("reason", "No reason provided")
 
         if is_faithful:
-            logger.info(f"✅ Guardrail PASSED: {reason}")
+            logger.info("Guardrail passed")
         else:
-            logger.warning(f"⚠️ Guardrail FAILED: {reason}")
+            logger.warning("Guardrail failed")
 
         return is_faithful, reason
 

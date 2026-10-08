@@ -41,3 +41,6 @@ jobs:
         S3_BUCKET_NAME: "mock"
       run: |
         make test
+
+    - name: Test memory ownership and lifecycle policies
+      run: make test-db

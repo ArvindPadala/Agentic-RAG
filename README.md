@@ -82,6 +82,63 @@ Agentic-RAG/
 
 ## 4. Local Deployment & Usage
 
+### Runtime privacy boundary
+
+The web application now defaults to `APP_MODE=public_demo`. This mode:
+- uses only browser-session chat context and never loads or saves `memory.json`;
+- searches chunks explicitly marked `visibility=public` in both vector and
+  hybrid retrieval; private and unclassified legacy records are excluded;
+- rejects uploads and memory saves server-side, including direct handler calls;
+- rejects non-empty file bodies at Gradio's framework upload route as well;
+- requires an exact approved `source_pdf_key` for visual citations;
+- disables content-bearing LangSmith tracing and hides internal error details.
+
+Existing documents are **not automatically published**. Until a reviewed corpus
+is explicitly approved, the public app returns no documents. Keep database and
+private data artifacts out of deployment packages; metadata filters are not a
+replacement for safe artifact packaging.
+
+Use the offline administrative tool on a reviewed local index, replacing these
+example IDs and source key with your explicitly approved selections:
+
+```bash
+python manage_public_corpus.py --publish --ids chunk-id-1 chunk-id-2 \
+  --source-pdf-key input/documents/approved-public-document.pdf
+python manage_public_corpus.py --revoke --ids chunk-id-1 chunk-id-2
+```
+
+The tool updates metadata only, requires existing IDs, and never publishes a
+whole collection implicitly. Review both text and its corresponding PDF before
+publication. New ingestion is private by default. Public BM25 views rebuild
+from filtered records, so an unrestricted index or stale visibility cache cannot
+be reused. Already-issued S3 URLs remain valid until their expiry.
+
+For the existing single-user upload and personal-memory workflow, set
+`APP_MODE=local_private` and run `python app.py`. This mode binds to `127.0.0.1`,
+rejects `--share`, and refuses to start in a Hugging Face Space. It is not an
+authenticated multi-user deployment. Compose publishes to loopback as well;
+its default public mode can still listen within the container. A loopback-only
+process running in local/private mode is best started directly on the host.
+
+Authenticated uploads and recoverable permanent accounts remain follow-on work.
+No external account or existing corpus has been migrated by these changes.
+
+**Optional private demo memory is now implemented**, behind
+`SUPABASE_ENABLED=true` and the setup described in [SUPABASE_SETUP.md](SUPABASE_SETUP.md).
+Ordinary visitors can still chat without signing up. Opting into a private demo
+session uses Supabase anonymous Auth and a CAPTCHA challenge, then stores memory
+under that verified identity. Sessions expire within one hour; recoverable
+permanent accounts and hosted uploads remain follow-on work. The running Space
+has not been deployed or configured by these local changes.
+
+Deployment packaging is source-only: `deploy.py` uses an exact allowlist, and
+the Dockerfile copies explicit runtime files. Neither copies your local Chroma
+database, documents, memory, or notebooks. A fresh deployment therefore needs
+an explicitly provisioned approved corpus or the upcoming durable datastore;
+the source upload does not migrate data. It also does not remove data already
+present in an existing remote Space. Audit and explicitly clean those artifacts
+before a public release. Importing `deploy.py` no longer triggers a deployment.
+
 ### Prerequisites
 - Python 3.10+
 - AWS Account (S3, Lambda, IAM permissions)

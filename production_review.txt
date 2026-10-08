@@ -1,0 +1,1475 @@
+AGENTIC-RAG — REPOSITORY AND PRODUCTION REVIEW
+===========================================
+Review date: 2026-10-07
+Repository: Agentic-RAG
+
+This document consolidates the repository inspection, the main production
+review, and the complete ingestion/deployment exploration subagent analysis.
+The original review was read-only. This text file was created afterward at
+the user's request. The historical findings below describe that snapshot;
+subsequent research, proposed changes, and implementation status are recorded
+in sections 4 and 5.
+
+No secrets, private documents, parsed document data, conversation memory,
+credentials, or notebook outputs are included.
+
+CONTENTS
+--------
+1. Repository overview
+2. Main production review
+3. Complete ingestion/deployment subagent analysis
+4. Zero-budget hosting and architecture research
+5. Latest implementation roadmap and progress
+6. Guest-first Supabase identity and private memory increment
+7. Local restart and initial hosted configuration verification
+
+
+1. REPOSITORY OVERVIEW
+======================
+
+Current Git branch at initial inspection: hf-deployment
+Verified with: git branch --show-current
+
+Main entry point:
+- app.py:568 — main() initializes clients, the document collection, and memory,
+  then launches the Gradio UI. Run with python app.py.
+- Both the Hugging Face configuration in README.md and the Dockerfile select
+  app.py.
+- CLI entry point: agent.py:583, for headless queries.
+
+Retrieval logic:
+- hybrid_search.py:48 — search_chroma_hybrid() combines ChromaDB vector search,
+  BM25 keyword search, reciprocal rank fusion, and optional cross-encoder
+  reranking.
+- gemini_helpers.py:241 — search_chroma() implements standard vector search.
+- agent.py:86 — build_search_tool() exposes retrieval to the agent and selects
+  standard or hybrid search.
+
+Tests:
+- tests/test_unit.py
+- tests/test_integration.py
+- tests/test_e2e.py
+- make test runs python -m pytest tests/.
+- Evaluation pipelines also live in eval/.
+
+No files were modified during the initial inspection.
+
+
+2. MAIN PRODUCTION REVIEW
+=========================
+
+EXECUTIVE ASSESSMENT
+--------------------
+The highest-value improvements are user/data isolation, deployment-artifact
+privacy, document-version integrity, recoverable ingestion, and request failure
+handling. These are supported by the current implementation rather than README
+claims.
+
+All five findings below are defects or missing production controls, not cosmetic
+refactors. Security exposure depends on who can access the deployment and
+whether stored data is private; those conditions were not verified.
+
+ACTUAL ARCHITECTURE AND DATA FLOW
+--------------------------------
+- Requests: app.py launches Gradio and creates shared Gemini, S3, Chroma, and
+  memory objects. Browser conversation history uses gr.State, but persistent
+  memory and the document collection are application-wide.
+- Agent: agent.py executes a synchronous LangGraph loop. Gemini can request
+  searches, which run through a five-worker thread pool. Optional query
+  decomposition precedes generation; an optional faithfulness check follows it.
+- Retrieval: Standard search queries Chroma. Hybrid search combines Chroma and
+  an in-memory BM25 index through reciprocal rank fusion, with optional
+  cross-encoder reranking.
+- Visual citations: Search results trigger S3 PDF lookup, rendering/cropping,
+  image caching, and one-hour presigned URLs.
+- Ingestion: Gradio uploads PDFs to S3; S3 invokes the ADE Lambda; Lambda writes
+  Markdown, grounding JSON, and individual chunks; the web handler polls S3
+  and indexes chunks into local persistent Chroma.
+- Persistence/deployment: Conversation memory is a JSON file. Compose mounts
+  memory and Chroma from the host. Docker copies the build context; the Hugging
+  Face deployment script uploads the working directory.
+- Evaluation: Separate scripts generate datasets, run agent variants, and
+  calculate retrieval/faithfulness metrics. These are not runtime protection
+  mechanisms.
+
+FINDING 1 — P0: ISOLATE PERSISTENT MEMORY AND DOCUMENT ACCESS BETWEEN USERS
+------------------------------------------------------------------------
+Classification: Verified isolation defect; security impact when independent
+users access the application.
+
+Evidence:
+- app.py:598–615 initializes and passes one shared memory object and collection
+  into the UI.
+- app.py:292–296 makes conversation history session-local, but does not isolate
+  persistent memory.
+- app.py:262–270 updates shared memory and saves it to the same file.
+- gemini_helpers.py:380–395 inserts remembered preferences, facts, and the last
+  session summary into subsequent prompts.
+- app.py:127–130,356–357 displays the last saved session summary.
+- app.py:393–411,617–623 exposes document upload and launches without
+  application authentication.
+- gemini_helpers.py:277–281 and hybrid_search.py:54–58 query the collection
+  without ownership filters.
+
+Trigger and impact:
+User A saves a conversation; user B's subsequent request receives A's remembered
+information in its system prompt and potentially in the memory panel. Uploaded
+documents also become searchable by other users. Authentication alone would not
+correct these shared-state leaks.
+
+Memory persistence additionally uses a direct truncating write
+(gemini_helpers.py:360–361), with no locking or atomic replacement. Concurrent
+saves or interrupted writes can lose or corrupt persistent state.
+
+Practical fix:
+Introduce an authenticated user/tenant identity and carry it through memory
+loading, saving, uploads, and retrieval. Store memory per identity and enforce
+document ownership filters server-side. Use atomic file replacement and
+synchronized updates if retaining JSON storage. For a deliberately public demo,
+disable personal persistent memory and restrict knowledge-base mutation to an
+administrator.
+
+Uncertainty:
+External authentication and the intended trust boundary were not inspected.
+Shared-memory behavior remains a defect even behind authentication.
+
+FINDING 2 — P0: PREVENT RUNTIME/PRIVATE DATA FROM ENTERING DEPLOYMENT ARTIFACTS
+---------------------------------------------------------------------------
+Classification: Verified packaging-control omission; disclosure is conditional
+on private data being present.
+
+Evidence:
+- deploy.py:11–15 uploads folder_path="." with exclusions that do not explicitly
+  cover conversation memory, Chroma, source documents, parsed chunks, or
+  notebooks.
+- Dockerfile:24–25 uses COPY . .
+- .dockerignore:37–45 excludes memory and some data directories, but does not
+  exclude chroma_db/, documents/, or document_chunks/.
+- .gitignore:2–6,14–15 identifies Chroma, generated archives, and conversation
+  memory as local/generated state.
+
+Trigger and impact:
+Build or deploy from a populated developer workspace. The Docker path can bake
+document text and metadata from Chroma into an image. The Hugging Face path
+lacks an explicit application-artifact boundary, allowing local data to become
+deployment candidates. Git exclusions are not a sufficient confidentiality
+control for these paths.
+
+Practical fix:
+Package from a clean staging directory using an explicit application-file
+allowlist. Exclude databases, conversation memory, source/parsed documents,
+notebook outputs, environment variants, and generated archives. Add an
+artifact-content check before publication.
+
+Uncertainty:
+No image or upload was created, and no actual disclosure is asserted. Effective
+Hugging Face SDK filtering was not exercised; the Docker exclusion gap is
+directly visible in the repository.
+
+FINDING 3 — P0: PRESERVE IMMUTABLE DOCUMENT VERSIONS ACROSS PARSING,
+                INDEXING, AND CITATIONS
+-----------------------------------------------------------------
+Classification: Verified correctness/data-integrity bug.
+
+Evidence:
+- upload_handler.py:24–32 derives input and output identities from the filename
+  and overwrites the same S3 input key.
+- ade_s3_handler.py:105–118 skips parsing when previous Markdown exists;
+  config.py:38–39 defaults reprocessing to false.
+- upload_handler.py:39–44 accepts any existing grounding object for that
+  filename.
+- gemini_helpers.py:195–200,224–230 skips existing chunk IDs and adds new records
+  without replacing the old document.
+- ade_s3_handler.py:285–289 stores only the filename stem as source identity.
+- agent.py:139–143 reconstructs the PDF key from that stem.
+- visual_grounding_helper.py:91–101 reuses cached images without checking the
+  source version.
+- hybrid_search.py:23–25,43–44 caches BM25 indefinitely by collection name;
+  indexing does not invalidate it.
+
+Trigger and impact:
+Upload a changed PDF with the same filename. The PDF can be replaced while old
+parsing output and old indexed text remain active. Answers can cite stale text
+against a different PDF. Forced reprocessing does not reconcile prior chunks,
+and lexical retrieval remains stale after uploads.
+
+Filename-prefix selection also permits unintended mixing: the report_ prefix
+in upload_handler.py:58–62 matches chunks for both report.pdf and
+report_appendix.pdf.
+
+Practical fix:
+Give each document version an immutable identity based on owner, full source
+key, and content hash or S3 version. Preserve that identity in chunk metadata
+and citation/image keys. Index the new version completely, activate it
+explicitly, then retire the prior version. Load exact chunk keys from a manifest
+rather than filename prefixes. Version or invalidate the BM25 cache after
+successful activation.
+
+FINDING 4 — P1: MAKE INGESTION COMPLETION TRUTHFUL, RECOVERABLE, AND RETRY-SAFE
+---------------------------------------------------------------------------
+Classification: Verified production-reliability bugs.
+
+Evidence:
+- ade_s3_handler.py:141–146 writes Markdown before the rest of the artifacts.
+- ade_s3_handler.py:249–256 publishes grounding JSON before writing individual
+  chunks at 259–297.
+- upload_handler.py:39–55 treats grounding existence plus a fixed five-second
+  sleep as completion.
+- ade_s3_handler.py:305–312 catches grounding/chunk failures and still records
+  success.
+- ade_s3_handler.py:316–325 catches processing failures and returns normally.
+- upload_handler.py:50–52,65–73 can time out or index zero chunks and still end
+  with an overall success message.
+- gemini_helpers.py:129–138 suppresses individual chunk-loading failures.
+
+Trigger and impact:
+Chunk publication takes longer than five seconds, an S3 write fails, or Lambda
+stops after writing Markdown. The UI can permanently index only part of a
+document. A subsequent attempt can skip the incomplete document because
+Markdown exists.
+
+Caught failures do not signal a failed asynchronous Lambda invocation, so
+Lambda's function-error retry behavior is not activated. Users receive success
+messages while content is missing.
+
+Practical fix:
+Write version-specific artifacts, validate their IDs/counts, and publish a
+completion manifest last. Treat that manifest, not Markdown or grounding
+existence, as the idempotency/completion marker. Distinguish missing objects from
+authorization and transient failures. Propagate failures, configure a failure
+destination and alarms, and report accurate per-file outcomes. Enable retries
+only after incomplete attempts can safely resume or restart.
+
+FINDING 5 — P1: BOUND PROVIDER RETRIES AND PRESERVE CONVERSATION STATE
+                TRANSACTIONALLY
+------------------------------------------------------------------
+Classification: Verified request-reliability defects; concurrent router failures
+depend on scheduling.
+
+Evidence:
+- llm_router.py:73–77,107–111 retries every APIError up to six times, although
+  rotation is limited to selected status codes.
+- llm_router.py:25–28 contains duplicate primary fallback entries.
+- llm_router.py:31–32,50–67,85–92 stores and mutates routing indices globally
+  without synchronization.
+- app.py:598 shares that router; app.py:616 permits concurrent handlers.
+- agent.py:459–465,304–305,351–353 mutates supplied conversation history
+  throughout a turn.
+- app.py:229–232 attempts rollback by popping only its last element.
+
+Trigger and impact:
+A permanent API error receives unnecessary retries and backoff. Concurrent
+requests can alter one another's routing choices; a context switch between
+incrementing and normalizing a key index can expose an out-of-range index.
+
+If generation fails after an earlier tool cycle, popping one history entry does
+not remove the failed turn. It can leave an unmatched tool call or other partial
+messages, contaminating the next request and potentially causing further
+provider errors.
+
+Practical fix:
+Keep retry selection request-local, with synchronized shared cooldown
+bookkeeping if needed. Deduplicate fallback models, classify retryable errors,
+use jitter/Retry-After, and enforce an end-to-end deadline. Execute each agent
+turn against a working history copy and commit it only on success. Validate
+empty/blocked provider responses before dereferencing response.candidates[0].
+
+INSPECTION AND VERIFICATION LIMITS
+---------------------------------
+Inspected:
+Web/CLI entry points, agent orchestration, both retrieval paths, indexing and
+JSON memory, Gemini routing, decomposition and guardrail behavior, PDF/image
+helpers, upload/ADE processing, Lambda infrastructure helpers, configuration,
+dependency manifests, Docker/Compose, deployment packaging, CI/Makefile, all
+three test files, and evaluation scripts. A read-only exploration agent also
+inspected ingestion and deployment paths.
+
+Actually executed:
+Read-only file/directory inspection and source searches. No application,
+provider call, ingestion job, build, deployment, dependency installation, or
+runtime reproduction was executed. The initial repository overview executed
+git branch --show-current.
+
+- make lint was attempted through the read-only verification tool but blocked
+  before execution.
+- git status --short was attempted through the dedicated read-only Git tool but
+  blocked before execution.
+- make test was not run. The existing four test methods cover formatting and
+  mocked search/generation, not the identified ingestion, isolation, routing,
+  or recovery scenarios.
+- No files were modified, committed, or deployed during the review.
+
+Still uncertain:
+Actual AWS permissions, bucket versioning, retry/failure-destination
+configuration, hosting authentication and persistent storage, installed
+dependency compatibility, and ADE page-number conventions. Secrets,
+conversation memory, private documents/chunks, evaluation data, and notebook
+outputs were not opened. Deployment and README claims were not treated as proof.
+
+RECOMMENDED IMPLEMENTATION ORDER
+--------------------------------
+1. Close runtime privacy boundaries: isolate memory, authorize retrieval, and
+   restrict uploads.
+2. Close artifact privacy boundaries: deploy only allowlisted application files.
+3. Establish immutable document identity: reconcile index versions, citations,
+   and retrieval caches.
+4. Add manifest-based completion and recovery: then enable retries and accurate
+   failure reporting.
+5. Make requests bounded and transactional: correct router retries/concurrency
+   and history rollback.
+
+Add focused regression tests alongside each fix, especially cross-user
+isolation, same-name replacement, interrupted chunk publication, and provider
+failure after a tool call.
+
+
+3. COMPLETE INGESTION/DEPLOYMENT SUBAGENT ANALYSIS
+================================================
+Subagent type: explore
+Task: Review ingestion and deployment
+Task ID: ses_eed8e1a16ffehMg6LHu1bHoFRd
+
+The following preserves the subagent's findings, severity assignments,
+architecture analysis, inspection coverage, and uncertainties. Paths have been
+normalized to repository-relative form and Markdown converted to plain text.
+Its findings overlap with the main review but are retained independently for
+completeness. Severity labels reflect the subagent's own assessment.
+
+EXECUTIVE ASSESSMENT
+--------------------
+The ingestion path has several verified correctness and reliability defects:
+replaced documents can retain old searchable content, uploads can index
+incomplete output, Lambda failures are acknowledged as successful invocations,
+and nested documents lose their full identity. Deployment helpers also overwrite
+existing S3 notification configuration and can produce contaminated ZIP
+artifacts.
+
+Two P0 security issues are conditional on deployment context: the web application
+exposes shared document-management operations without application
+authentication, and deployment packaging does not consistently exclude local
+private data.
+
+This was a read-only static analysis. The subagent did not execute application
+initialization, tests, builds, package installation, deployment commands, or
+network operations. It did not read .env, memory.json, credentials, private
+documents, chunk data, or notebook contents/outputs.
+
+Severity:
+- P0: security or serious data-integrity exposure
+- P1: production reliability
+- P2: performance/scalability
+
+ARCHITECTURE AND DATA FLOW
+--------------------------
+1. Web application: app.py initializes one Gemini router, S3 client, persistent
+   Chroma collection, and memory object for the application.
+2. Upload: upload_handler.py uploads each file to input/documents/<basename>.
+3. Asynchronous parsing: an S3 object-created notification invokes
+   ade_s3_handler.py.
+4. Lambda output: the handler downloads the PDF into /tmp, calls LandingAI ADE,
+   then writes Markdown, aggregate grounding JSON, and individual chunk JSON
+   objects.
+5. Completion detection: the web upload handler polls for grounding JSON, waits
+   another five seconds, downloads matching chunk objects, and adds them to
+   local Chroma.
+6. Retrieval: Chroma vector retrieval can be combined with a cached BM25 index
+   and a lazily loaded cross-encoder.
+7. Visual citations: source PDFs are located by a reconstructed filename,
+   cropped, cached in S3, and exposed using presigned URLs.
+8. Infrastructure: lambda_helpers.py imperatively creates/reuses IAM roles,
+   builds ZIPs, deploys Lambda, and replaces S3 notification configuration.
+9. Application deployment: Docker uses requirements-prod.txt; the Hugging Face
+   upload script uploads the working directory. CI installs requirements.txt,
+   not the Docker production dependency set.
+
+There is no durable ingestion-job record or manifest connecting an upload
+version to a complete, validated set of indexed chunks.
+
+VERIFIED FINDINGS
+-----------------
+
+SUBAGENT FINDING 1 — P0: SHARED DOCUMENT OPERATIONS ARE EXPOSED WITHOUT
+                         APPLICATION AUTHENTICATION
+----------------------------------------------------------------------
+Evidence:
+- app.py:598–615: one collection, bucket, and memory object are supplied to UI.
+- app.py:393–411: upload/index action is exposed directly through the UI.
+- app.py:616–623: launch binds to 0.0.0.0, supplies no authentication, and
+  disables strict CORS.
+- docker-compose.yml:9–10: port is published without a loopback-only binding.
+- upload_handler.py:27–29: uploads write to the shared bucket namespace.
+
+Trigger:
+The service is reachable by an untrusted user without an external authentication
+layer.
+
+Impact:
+That user can upload documents into the shared knowledge base, overwrite a known
+filename, poison retrieval content, and consume S3, Lambda, and ADE resources.
+Retrieval has no per-user collection or authorization filter, so a shared
+deployment does not isolate uploaded documents between users.
+
+Practical fix:
+Require authentication and authorization for upload and retrieval; namespace
+documents by owner/tenant; enforce tenant filters server-side; restrict local
+Compose publishing to 127.0.0.1 if public access is unnecessary. Re-enable strict
+CORS unless there is a justified requirement.
+
+Boundary:
+Application-level omission is verified. External proxy authentication, Space
+visibility, firewall rules, and intended trust boundaries were not inspected.
+
+SUBAGENT FINDING 2 — P0: DEPLOYMENT PACKAGING CAN INCLUDE PRIVATE LOCAL STATE
+--------------------------------------------------------------------------
+Evidence:
+- deploy.py:11–15: uploads folder_path="."; explicit exclusions do not cover
+  memory.json, chroma_db/, input/, output/, or generated Lambda ZIPs.
+- Dockerfile:24–25: copies remaining build context into the image.
+- .dockerignore:37–45: excludes some private state, but not chroma_db/ or
+  ade_lambda.zip.
+- .gitignore:2–6,14–15: identifies Chroma, the Lambda ZIP, and conversation
+  memory as local/generated state.
+
+Trigger:
+Deployment runs from a working directory containing excluded-from-Git private
+state, or a Docker build includes a populated local Chroma database.
+
+Impact:
+Document text and metadata may be copied into a remotely hosted repository or
+container image. A generated Lambda ZIP can also unintentionally redistribute
+packaged local artifacts. A Git exclusion is not a sufficient deployment
+confidentiality control.
+
+Practical fix:
+Deploy from a clean staging directory using an explicit source-file allowlist.
+Exclude all databases, conversation memory, document directories, generated
+archives, environment-file variants, and credential artifacts in every
+deployment path. Inspect artifact contents before upload/build publication.
+
+Boundary:
+Packaging omissions are verified; private files were not inspected and no
+upload was executed, so actual disclosure is not claimed. Effective Hugging
+Face SDK filtering was not executed.
+
+SUBAGENT FINDING 3 — P1: REPLACING A PDF CAN PERMANENTLY RETAIN THE OLD
+                         PARSED AND INDEXED DOCUMENT
+----------------------------------------------------------------------
+Evidence:
+- upload_handler.py:24–32: input/output identities depend only on filename/stem.
+- ade_s3_handler.py:105–121: Markdown existence causes parsing to be skipped.
+- config.py:38–39: reprocessing defaults to false.
+- upload_handler.py:39–44,58–69: any existing grounding object is accepted,
+  then matching chunks are indexed with skip_existing=True.
+- gemini_helpers.py:195–200,224–230: existing IDs are skipped; indexing uses
+  add, not replacement.
+
+Trigger:
+Upload a changed PDF with the same filename.
+
+Impact:
+The source PDF is overwritten, but Lambda can skip processing and the UI can
+immediately consume previous grounding/chunks. Search returns old text while
+citation generation may use the new PDF. Even forced reprocessing does not
+remove previous S3 chunks or previous indexed records.
+
+Practical fix:
+Give each document version an immutable ID based on owner, full source key,
+and content hash/version. Process and index that version, then atomically
+activate it. Replace/delete prior version records explicitly. Cache visual
+citations by source version too.
+
+SUBAGENT FINDING 4 — P1: GROUNDING JSON IS PUBLISHED BEFORE CHUNKS, SO
+                         UPLOAD COMPLETION RACES INDEXING
+-------------------------------------------------------------------
+Evidence:
+- ade_s3_handler.py:249–256: grounding JSON is written first.
+- ade_s3_handler.py:259–297: individual chunks are written afterward,
+  sequentially.
+- upload_handler.py:39–55: grounding existence is treated as completion,
+  followed by a fixed five-second delay.
+- upload_handler.py:58–71: whatever chunks currently exist are indexed,
+  then success is reported.
+
+Trigger:
+Chunk creation takes more than five seconds after grounding publication, or
+Lambda fails partway through chunk writes.
+
+Impact:
+Only a subset of chunks is indexed. There is no later reconciliation in this
+path, so missing content can remain missing indefinitely.
+
+Practical fix:
+Write an immutable chunk set, validate its count/IDs, and publish a completion
+manifest last. The UI should wait for the manifest for the exact uploaded
+version and verify the listed objects before indexing. This is an application
+commit-order problem, not a reason to add more arbitrary S3 sleeps.
+
+SUBAGENT FINDING 5 — P1: LAMBDA SWALLOWS FAILURES, DEFEATING ASYNCHRONOUS
+                         ERROR RETRIES
+----------------------------------------------------------------------
+Evidence:
+- ade_s3_handler.py:305–312: grounding/chunk-write failures are caught and
+  the document is still marked "success".
+- ade_s3_handler.py:316–325: outer document failures are collected, but the
+  invocation returns normally with "status": "ok".
+
+Trigger:
+ADE fails, input retrieval fails, or S3 output writes fail.
+
+Impact:
+AWS Lambda sees a successful invocation, not a failed asynchronous invocation.
+Merely including "failed" in a returned JSON object does not activate Lambda's
+error retry/failure-destination behavior. Missing or partially processed
+documents are therefore silently acknowledged.
+
+Practical fix:
+Propagate invocation failures or move to an SQS-backed worker with explicit
+item-level retry semantics. Make processing idempotent before enabling retries,
+and configure a failure destination plus alarms.
+
+SUBAGENT FINDING 6 — P1: MARKDOWN EXISTENCE PERMANENTLY "COMMITS"
+                         INCOMPLETE INGESTION
+---------------------------------------------------------------
+Evidence:
+- ade_s3_handler.py:105–118: Markdown existence is the processed-state check.
+- ade_s3_handler.py:141–146: Markdown is written before grounding/chunks.
+- ade_s3_handler.py:305–306: failures producing remaining artifacts are
+  swallowed.
+
+Trigger:
+Markdown succeeds, but a later operation fails or Lambda times out.
+
+Impact:
+A subsequent event or manual retry skips the document despite missing chunks.
+Fixing failure propagation alone would not repair this state: retries would
+still hit the Markdown skip.
+
+Practical fix:
+Use a validated, version-specific completion manifest as the idempotency check.
+A Markdown object must not represent completed ingestion.
+
+SUBAGENT FINDING 7 — P1: FULL DOCUMENT IDENTITY IS LOST FOR NESTED PATHS;
+                         SOME CHUNK SETS COLLIDE
+----------------------------------------------------------------------
+Evidence:
+- ade_s3_handler.py:83–103: Markdown preserves input directory structure.
+- ade_s3_handler.py:150–169: grounding preserves the deeper relative path.
+- ade_s3_handler.py:285–289: chunk metadata retains only the filename stem;
+  chunk keys omit deeper subdirectories.
+- agent.py:139–143: citation lookup reconstructs only
+  input/documents/<stem>.pdf.
+
+Trigger:
+Ingest input/documents/team-a/report.pdf and
+input/documents/team-b/report.pdf, or documents outside input/documents/.
+
+Impact:
+Nested documents are flattened into a common chunk namespace and lose their
+source identity. Depending on ADE chunk IDs, objects can overwrite each other
+or distinct chunk sets can be mixed. Citation lookup either fails or selects
+a different same-stem PDF.
+
+Practical fix:
+Store the exact source S3 key and immutable document/version ID in every chunk.
+Preserve the full hierarchy or use a document-ID directory for chunks. Citation
+generation should use stored source identity, not filename reconstruction.
+
+SUBAGENT FINDING 8 — P1: UPLOAD PREFIX SELECTION CAN INCLUDE OTHER DOCUMENTS
+-------------------------------------------------------------------------
+Evidence:
+- upload_handler.py:58–62: selects chunks with <stem>_.
+- ade_s3_handler.py:289: object names concatenate stem and chunk ID with the
+  same separator.
+- gemini_helpers.py:122–134: every matching JSON object is accepted.
+
+Trigger:
+Upload report.pdf when report_appendix.pdf has already produced chunks.
+
+Impact:
+The prefix report_ matches both documents' chunk objects. Indexing can ingest
+unrelated content and misleadingly attribute the operation to the uploaded
+file.
+
+Practical fix:
+Use a delimiter-bounded document directory, such as
+chunks/<document-id>/<version>/, and preferably enumerate exact chunk keys
+from a manifest.
+
+SUBAGENT FINDING 9 — P1: LAMBDA IMPORTS DEPEND ON AN UNRELATED GEMINI KEY
+                         AND CAN LEAVE CONFIGURATION UNDEFINED
+----------------------------------------------------------------------
+Evidence:
+- config.py:19: Gemini API key is always required.
+- config.py:59–65: configuration failure is caught without creating settings
+  or re-raising.
+- ade_s3_handler.py:17,24–30: Lambda imports and immediately consumes settings.
+- lambda_helpers.py:12: deployment helpers have the same import dependency.
+
+Trigger:
+Configure the ADE Lambda with its required ADE/AWS settings, but no Gemini key.
+
+Impact:
+Import fails because settings was never assigned. The ADE worker cannot start
+even though its parsing path does not use Gemini. Missing ADE configuration is
+also not validated by Config, because the ADE key is optional.
+
+Practical fix:
+Split settings by service responsibility, validate only each service's actual
+requirements, and fail explicitly on invalid configuration. Avoid constructing
+SDK clients before configuration validation.
+
+SUBAGENT FINDING 10 — P1: S3 TRIGGER SETUP DELETES UNRELATED BUCKET
+                          NOTIFICATION INTEGRATIONS
+----------------------------------------------------------------
+Evidence:
+- lambda_helpers.py:296–309: calls put_bucket_notification_configuration with
+  only one Lambda configuration.
+
+Trigger:
+Run setup on a bucket already configured with other Lambda, SNS, SQS, or
+EventBridge notification settings.
+
+Impact:
+The supplied notification document replaces the bucket's existing
+configuration. Other consumers can stop receiving events.
+
+Practical fix:
+Read existing configuration, preserve unrelated entries, and update a stable
+ID for this trigger, or manage the complete notification document through one
+infrastructure owner. Guard against concurrent configuration changes.
+
+SUBAGENT FINDING 11 — P1: EXISTING EXECUTION ROLES ARE REUSED WITHOUT
+                          RECONCILING REQUIRED PERMISSIONS
+------------------------------------------------------------------
+Evidence:
+- lambda_helpers.py:49–77: logging and bucket policies are installed only after
+  new-role creation.
+- lambda_helpers.py:82–85: an existing role is simply fetched and reused.
+- lambda_helpers.py:66–67: bucket permissions depend on current settings.
+
+Trigger:
+Reuse a role after changing the bucket, recover from partially completed setup,
+or use a pre-existing role lacking required policies.
+
+Impact:
+Deployment reports role reuse, but Lambda can lack S3 or logging access. It can
+also retain obsolete broader permissions.
+
+Practical fix:
+Reconcile the trust policy, managed logging policy, and desired inline policy
+on every run. Scope object read/write permissions to input/output prefixes
+where possible.
+
+SUBAGENT FINDING 12 — P1: ZIP PACKAGING CAN RETAIN DELETED FILES AND
+                          SILENTLY TOLERATE FAILED BUILD STEPS
+-----------------------------------------------------------------
+Evidence:
+- lambda_helpers.py:110–112: removes package directory, but not previous output
+  archive.
+- lambda_helpers.py:166–175: source copying and ZIP creation do not check exit
+  status.
+- lambda_helpers.py:180–184: an existing ZIP's size can be reported as
+  successful output.
+
+Trigger:
+Rebuild an existing archive after removing/renaming dependencies or source
+files, or encounter a failed copy/archive command.
+
+Impact:
+zip -r updates an existing archive; omitted old members need not be deleted.
+A stale file can survive deployment, or a failed build can return an older ZIP
+as if it were newly built.
+
+Practical fix:
+Build in a unique temporary directory, create a brand-new archive, check all
+subprocess results, validate required modules and archive members, then
+atomically publish the artifact. Use argument arrays rather than interpolated
+shell commands.
+
+SUBAGENT FINDING 13 — P1: LAMBDA DEPLOYMENT USES FIXED SLEEPS INSTEAD OF
+                          READINESS CHECKS AND IGNORES ROLE/ARCHITECTURE
+                          CHANGES
+----------------------------------------------------------------------
+Evidence:
+- lambda_helpers.py:232–247: code update is followed by a ten-second sleep and
+  immediate configuration update.
+- lambda_helpers.py:213–223: role and architecture are applied on creation.
+- lambda_helpers.py:241–248: update does not apply either role or architecture.
+- lambda_helpers.py:114–140: package dependencies always target Python
+  3.12/Linux x86-64.
+
+Trigger:
+An update lasts more than ten seconds; desired execution role changes; an
+existing function is ARM64; or a caller requests a runtime/architecture
+different from the hardcoded wheel target.
+
+Impact:
+Updates can encounter conflicts or leave the function using the wrong role.
+Binary wheels can be incompatible with actual function runtime/architecture.
+
+Practical fix:
+Use Lambda waiters and inspect update status after code and configuration
+changes. Reconcile role and architecture. Derive package targets from desired
+function configuration and reject unsupported combinations.
+
+SUBAGENT FINDING 14 — P1: UPLOAD FAILURES AND EMPTY/PARTIAL INDEXING ARE
+                          REPORTED AS OVERALL SUCCESS
+---------------------------------------------------------------------
+Evidence:
+- upload_handler.py:45–51: all polling exceptions are treated as "not yet
+  processed"; timeout continues to the next file.
+- upload_handler.py:65–73: zero chunks can still result in "Done indexing" and
+  the unconditional final success message.
+- gemini_helpers.py:129–138: individual chunk download/JSON failures are
+  suppressed.
+- lambda_helpers.py:344–359: synchronous invocation success is judged by HTTP
+  status alone, without checking Lambda's FunctionError.
+
+Trigger:
+Access is denied during polling, parsing times out, chunks are
+malformed/unreadable, ADE returns no chunks, or a synchronous Lambda invocation
+returns a function error with HTTP 200.
+
+Impact:
+Operators/users receive misleading success signals while the knowledge base
+is incomplete or unchanged. Access-denied errors can waste the entire polling
+window.
+
+Practical fix:
+Distinguish not-found from permission/transient failures; propagate partial
+ingestion failures; validate expected counts; return per-file outcomes and an
+accurate aggregate summary. Check FunctionError on synchronous invocations.
+
+SUBAGENT FINDING 15 — P1: BM25 REMAINS STALE AFTER DOCUMENT UPLOADS
+----------------------------------------------------------------
+Evidence:
+- hybrid_search.py:23–25,43–44: cache is keyed by collection name and returned
+  indefinitely.
+- upload_handler.py:65–70: ingestion mutates collection without invalidating
+  the cache.
+- app.py:137,326–333: hybrid retrieval is the default UI mode.
+
+Trigger:
+Run a hybrid search, then upload/index new documents in the same process.
+
+Impact:
+New documents participate in dense search but not lexical retrieval until
+restart. A same-name collection from another database can also reuse the wrong
+lexical cache within a process.
+
+Practical fix:
+Key the cache by database/collection identity and an ingestion generation.
+Invalidate or rebuild it after successful index mutation, with synchronization
+around concurrent readers/builders.
+
+SUBAGENT FINDING 16 — P2: INDEXING PERFORMS AN UNBOUNDED WRITE AND
+                          UNNECESSARILY LOADS EXISTING COLLECTION CONTENTS
+--------------------------------------------------------------------------
+Evidence:
+- gemini_helpers.py:195–196: obtains existing IDs using unrestricted
+  collection.get().
+- gemini_helpers.py:209–230: creates complete arrays and makes one
+  collection.add call.
+
+Trigger:
+A large document/chunk set or a large existing collection.
+
+Impact:
+Memory and latency grow with the full corpus; a single write can exceed the
+installed Chroma client's supported batch size. No resumable batching exists
+in this path.
+
+Practical fix:
+Check only candidate IDs with minimal fields, batch within the client's
+supported maximum, track progress durably, and validate the complete manifest
+before activating the document version.
+
+SUBAGENT FINDING 17 — P2: LAMBDA ACCUMULATES INPUT PDFS IN /tmp WITHOUT
+                          SIZE CHECKS OR CLEANUP
+--------------------------------------------------------------------
+Evidence:
+- ade_s3_handler.py:125–129: reads entire object into memory and writes
+  /tmp/<filename>.
+- ade_s3_handler.py:123–322: no corresponding temporary-file cleanup.
+- lambda_helpers.py:213–224: does not configure ephemeral storage.
+
+Trigger:
+Large PDFs or multiple distinct PDFs processed by a reused execution
+environment.
+
+Impact:
+Warm Lambda environments retain temporary files. Storage can fill even when
+individual files fit; large inputs also consume memory before parsing begins.
+
+Practical fix:
+Enforce object-size limits, stream into uniquely named temporary files, remove
+them in finally, configure appropriate ephemeral storage, and reject or route
+oversized jobs to a suitable worker.
+
+DEPLOYMENT, DEPENDENCIES, AND CI: VERIFIED GAPS AND UNCERTAINTIES
+---------------------------------------------------------------
+Verified gaps:
+
+1. CI does not verify the production Docker dependency set.
+   .github/workflows/ci.yml:23–27 installs requirements.txt;
+   Dockerfile:11–22 uses requirements-prod.txt.
+
+2. "Production" dependencies are not fully locked.
+   requirements-prod.txt:19–22 has open-ended constraints, including a
+   duplicate sentence-transformers requirement. Transitive dependencies are
+   not locked. Dockerfile:12,22 wheels only direct requirements initially and
+   resolves remaining dependencies during final installation.
+
+3. CI uses the wrong bucket environment-variable name.
+   .github/workflows/ci.yml:41 sets S3_BUCKET_NAME, whereas config.py:32 reads
+   S3_BUCKET. Current mocks can hide this mismatch.
+
+4. Inspected tests do not cover ingestion/infrastructure failure paths.
+   tests/test_unit.py:5–19 tests URL formatting;
+   tests/test_integration.py:6–32 tests a mocked search tool;
+   tests/test_e2e.py:6–38 tests mocked generation. They do not exercise version
+   replacement, incomplete artifacts, Lambda retry behavior, notification
+   preservation, or packaging.
+
+5. Lambda dependency packaging is caller-defined, not represented by a
+   dedicated manifest.
+   lambda_helpers.py:90–103 accepts a requirements list;
+   requirements.txt:19–21 comments out the ADE SDK. Correct Lambda installation
+   cannot be inferred from application requirements alone.
+
+Uncertainties — not asserted as confirmed bugs:
+
+- Dependency resolution: pip was not run and remote package metadata was not
+  inspected. Compatibility of pinned older LangSmith with whichever
+  LangGraph/LangChain versions resolve needs verification; a proven resolver
+  conflict is not claimed.
+- ADE page conventions: ingestion copies ADE page values directly, while the
+  active crop function treats them as zero-based. The alternate annotation
+  helper documents one-based pages. Without the SDK contract or safe fixtures,
+  an off-by-one defect is not proven.
+- Actual AWS configuration: bucket versioning/encryption, KMS permissions,
+  notification contents, IAM policies, concurrency limits, failure
+  destinations, and alarms were not queried.
+- Hugging Face persistence: Compose explicitly persists Chroma, but Space
+  storage provisioning is not represented in inspected application deployment
+  configuration. Loss on restart depends on actual hosted storage setup.
+- Notebook-based setup: pipeline_setup.ipynb was located but not opened because
+  embedded outputs could contain credentials or private data. Actual helper
+  arguments and Lambda environment/source-file selections there were not
+  verified.
+- Vulnerabilities: no network advisory lookup or dependency audit was
+  performed.
+
+SUBAGENT INSPECTED FILES
+------------------------
+Fully read:
+- upload_handler.py
+- ade_s3_handler.py
+- lambda_helpers.py
+- deploy.py
+- config.py
+- Dockerfile
+- docker-compose.yml
+- requirements.txt
+- requirements-prod.txt
+- eval/requirements-dev.txt
+- Makefile
+- .github/workflows/ci.yml
+- .dockerignore
+- .gitignore
+- app.py
+- gemini_helpers.py
+- hybrid_search.py
+- visual_grounding_helper.py
+- utils/logger.py
+- llm_router.py
+- tests/test_unit.py
+- tests/test_integration.py
+- tests/test_e2e.py
+- README.md
+
+Partially read:
+- agent.py:1–235, covering initialization, collection loading, retrieval,
+  and source-PDF lookup.
+
+Targeted import/deployment-pattern searches also covered Python source under
+the repository, including evaluation scripts.
+
+SUBAGENT HIGHEST-VALUE NEXT STEPS
+--------------------------------
+1. Introduce immutable document versions and a completion manifest written
+   last. This addresses stale replacement, premature completion, partial
+   retries, prefix collisions, and source identity together.
+2. Secure both runtime and deployment boundaries. Authenticate document
+   operations, isolate ownership, and deploy only allowlisted application
+   artifacts.
+3. Add an offline ingestion/deployment test suite and production-image CI.
+   Specifically test replacement, interrupted chunk writes, propagated Lambda
+   errors, notification preservation, fresh ZIP creation, cache invalidation,
+   and the exact production dependency set.
+
+Subagent verification status:
+Static findings only. make test, make lint, Docker builds, dependency
+resolution, and AWS/hosting checks were intentionally not run under the
+requested restrictions.
+
+4. ZERO-BUDGET HOSTING AND ARCHITECTURE RESEARCH
+===============================================
+Research recorded: 2026-10-07
+
+USER REQUIREMENTS AND CONFIRMED CONTEXT
+--------------------------------------
+- Build a production-engineered project with the full feature set, including
+  uploads, persistent memory, hybrid retrieval, citations, and agent options.
+- Provide a public showcase for interviews and hands-on tryouts.
+- No budget for hosting or operation.
+- The user confirms that the existing Hugging Face Space is running without
+  a paid subscription using ZeroGPU:
+  https://huggingface.co/spaces/ArvindPadala/Agentic-Document-RAG
+- Do not equate a free deployment with guaranteed uptime, unlimited inference,
+  or enterprise-scale capacity. Production-quality engineering is achievable
+  at a modest scale; claims require measurements and stated limits.
+
+OFFICIAL SOURCES CONSULTED
+--------------------------
+- https://huggingface.co/docs/hub/spaces-overview
+- https://huggingface.co/docs/hub/spaces-zerogpu
+- https://supabase.com/pricing
+- https://supabase.com/docs/guides/database/extensions/pgvector
+- https://www.oracle.com/cloud/free/
+- https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm
+- https://render.com/docs/free
+- https://developers.cloudflare.com/workers/platform/limits/
+
+These pages were fetched for research. No infrastructure was provisioned,
+accounts configured, credentials inspected, or benchmarks executed. Pricing,
+eligibility, quotas, and capacity can change; confirm them in the account before
+provisioning. A request to https://ai.google.dev/gemini-api/docs/pricing failed
+with a transport error, so current Gemini free-tier terms were not verified.
+
+HOSTING FINDINGS
+----------------
+Hugging Face ZeroGPU:
+- Best immediate public compute/demo host because the user's Space already
+  exists and works. No migration is needed simply to improve engineering.
+- Current documentation permits eligible free personal accounts in good
+  standing to host up to two ZeroGPU Spaces.
+- GPU allocation is shared and dynamic, with queues and visitor quotas.
+  It is not an always-on dedicated GPU.
+- ZeroGPU currently supports the Gradio SDK rather than arbitrary Docker
+  hosting. Free persistent local disk should not be assumed.
+- The Spaces overview distinguishes free Static Spaces from compute Spaces;
+  new Gradio/Docker compute hosting generally requires a paid plan except for
+  the free ZeroGPU eligibility route. The user's existing ZeroGPU deployment
+  resolves the immediate hosting uncertainty.
+- Current repository code decorates a dummy startup function at app.py:447–452;
+  the reranker uses device='cpu' at hybrid_search.py:19. The actual retrieval
+  workload is not accelerated by ZeroGPU in the reviewed implementation.
+- Benchmark real GPU workloads before changing them: allocation overhead can
+  outweigh gains on small batches.
+
+Supabase Free:
+- Useful for authentication, durable user-scoped memory, document/version
+  metadata, ingestion-job state, and private object storage.
+- Research page lists 500 MB database size, 1 GB file storage, 50,000 monthly
+  active users, two active projects, and 5 GB egress plus 5 GB cached egress.
+- Free projects can pause after one week of inactivity; automatic backups are
+  not included. Plan explicit exports and recovery within the project's limits.
+- Social OAuth is available; it avoids implementing a custom account system.
+- pgvector is supported and can provide shared persistent vector retrieval.
+- Authorization must apply to vector queries and lexical candidates. Database
+  row-level policies must not be assumed to protect privileged server clients
+  that bypass them; server-side ownership checks remain necessary.
+- An interface-first migration is preferable to rewriting Chroma/BM25 all at
+  once. Mutable local Chroma alone cannot be the source of truth for private
+  uploads across application restarts or multiple instances.
+
+Oracle Cloud Always Free:
+- Strongest researched alternative for a conventional Docker backend,
+  ingestion worker, persistent volumes, and operational experiments.
+- Current documentation lists Ampere A1 allowances equivalent to 2 OCPUs and
+  12 GB RAM, plus 200 GB combined boot/block volumes and 20 GB object storage
+  in the Always Free-only state. Older articles advertising larger allowances
+  should not be used as a provisioning promise.
+- Requires card/identity verification; free capacity may be unavailable in the
+  home region, ARM dependencies require verification, and idle instances may
+  be reclaimed. A VM is not guaranteed to be obtainable or continuously kept.
+- Remain within Always Free eligibility. Trial credits are temporary and are
+  not a sustainable zero-budget architecture.
+
+Render Free:
+- Suitable for lightweight API experiments, not the existing heavy Python
+  embedding/reranking stack without substantial resource changes.
+- The documented free compute plan has 512 MB RAM and 0.1 CPU.
+- Services sleep after 15 minutes idle and use ephemeral filesystems; no free
+  persistent disks or scaling beyond one instance.
+- Free Postgres expires after 30 days, so it is not the recommended durable
+  datastore. Render explicitly does not recommend free instances for production.
+
+Cloudflare Workers Free:
+- Suitable for a lightweight gateway or separate static frontend later.
+- Current limits list 100,000 requests/day, 10 ms CPU per request, and 128 MB
+  memory. Network waiting is not counted as CPU time.
+- Not a drop-in host for this Python/PyTorch/Chroma application.
+- Adding another service now would not fix current privacy or ingestion defects.
+
+RECOMMENDED TARGET ARCHITECTURE
+-------------------------------
+Keep the existing Hugging Face deployment, add Supabase for authenticated and
+durable state, and maintain a reproducible local deployment for load testing.
+
+Anonymous visitors -> explicitly approved public showcase corpus
+Signed-in users -> public corpus plus their own documents and memory
+Both -> server-side authorization -> LangGraph -> authorized hybrid retrieval
+     -> reranking -> bounded generation -> authorized visual citations
+
+Supabase: identity, private storage, memory, document/version metadata, durable
+job status, and eventually shared vector retrieval where justified.
+
+Uploads: authorized storage -> durable ingestion job -> bounded worker ->
+validated chunk set/index -> activate immutable document version.
+
+The worker may initially run in the Space with restart recovery from durable
+jobs. A later worker can run on Oracle or locally without changing the job
+contract. A local worker is not always-on; uploads wait while the laptop is off.
+
+FEATURES UNDER THE ZERO-BUDGET CONSTRAINT
+----------------------------------------
+- Persistent memory: authenticated, user-scoped durable records.
+- Uploads: authenticated and limited by file size, page count, per-user storage,
+  concurrency, and processing quotas. Owner/admin-only until user authorization
+  and durable ingestion are implemented.
+- Parsing: local text extraction by default; ADE remains an optional provider
+  integration, not a requirement for the free deployment.
+- Local extraction is not equivalent to ADE for scans, tables, and complex
+  layouts. Evaluate OCR separately and expose capability limits honestly.
+- Embeddings: small local model; preserve model/version consistency.
+- Retrieval: authorized vector and lexical candidates, fused and reranked.
+- Generation: verify free-provider allowance or benchmark a local ZeroGPU
+  model. A local model trades API costs for queueing, model startup, GPU quotas,
+  and potentially different answer quality.
+- Citations: private files require authorization and short-lived access;
+  approved public PDFs/crops may be served as explicit showcase assets.
+- Query decomposition/guardrail: budgeted options with explicit unavailable
+  or error behavior rather than silently overstating success.
+- Use bounded queues, concurrency, request/context/search/output limits,
+  classified retries, and an end-to-end deadline.
+- If generation is unavailable, return clearly labeled retrieved passages and
+  citations rather than pretend prerecorded output is live generation.
+- Avoid logging raw conversations and content-bearing remote traces by default.
+- Package only approved source and showcase artifacts, never local private data.
+
+ACCESS MODEL AND DECISION HISTORY
+---------------------------------
+The earlier simplest public-demo proposal disabled all public uploads and
+persistent personal memory. The user's subsequent requirement is to retain
+the full feature set, so that proposal is an interim boundary, not the final
+architecture.
+
+Final proposed access model:
+- Anonymous: public corpus only, session-local chat, no persistent memory or
+  ingestion rights.
+- Authenticated user: own persistent memory, public and own documents, bounded
+  uploads once ownership and durable ingestion are ready.
+- Administrator: explicitly authorized corpus administration and ingestion.
+- Authentication is checked server-side for every handler and direct API call;
+  hidden UI buttons are not an authorization control.
+- Legacy shared memory is not automatically assigned to a user. Unclassified
+  documents must be explicitly approved or remain unavailable publicly.
+- No permanent deletion of uploads or memory from the project is proposed.
+
+FREE SCALABILITY AND FAILURE TESTING PLAN
+----------------------------------------
+- Use local Docker and Locust or k6 with synthetic documents/test users.
+- Measure throughput, p50/p95/p99 latency, CPU/RAM, queue depth, retrieval and
+  reranking time, upload processing time, error rate, and recovery behavior.
+- Begin with 1, 5, 10, and 20 concurrent users and increase only with measured
+  headroom. These are test levels, not advertised capacity guarantees.
+- Separate real retrieval benchmarks, orchestration tests with simulated
+  provider latency/failures, and small live end-to-end generation checks.
+- Mocked-provider throughput is not proof of live model capacity.
+- Exercise restarts during ingestion, duplicate uploads, 429/503 provider
+  failures, expired sessions, storage failures, and interrupted memory updates.
+- Run only small bounded hosted checks within provider rules and quotas;
+  saturate the local deployment, not shared ZeroGPU infrastructure.
+- Publish actual hardware, corpus size, workload, latency, throughput, provider
+  limits, overload behavior, and isolation results. No benchmark has yet run.
+
+
+5. LATEST IMPLEMENTATION ROADMAP AND PROGRESS
+============================================
+Started: 2026-10-07
+The user requested documenting the research and implementing changes one by one.
+This section tracks actual work, not claimed completion of the entire roadmap.
+
+[x] 1. Record research, official sources, limitations, and the latest roadmap.
+[x] 2. First privacy increment: explicit safe public mode, session-only memory,
+       server-side rejection of unauthenticated mutation, approved-public
+       retrieval boundary, and retain explicit local/private functionality.
+[x] 3. Verify the first increment with focused privacy regression tests and
+       repository lint/tests; record exact results below.
+[ ] 4. Add authenticated identity and durable user-scoped persistence with
+       Supabase. Provisioning needs the user's Supabase project details and
+       provider configuration; keep credentials out of Git and documentation.
+       [x] 4a. Guest-first identity and private temporary-memory code, local
+               ownership/lifecycle tests, and setup guide (section 6).
+       [ ] 4b. Live project migration, anonymous Auth/CAPTCHA configuration,
+               environment/HF Secrets, and two-browser integration checks.
+       [ ] 4c. Optional recoverable permanent account linking and session design.
+[ ] 5. Authorize every retrieval/citation path and implement immutable document
+       versions, exact chunk manifests, and generation-aware retrieval caches.
+[ ] 6. Add recoverable durable ingestion jobs and free local parsing; validate
+       inputs, enforce quotas, and keep AWS/ADE optional.
+[ ] 7. Bound provider calls, fix transactional history rollback, and benchmark
+       actual GPU/generation options rather than selecting by assumption.
+[ ] 8. Add local load/failure tests and publish measured results.
+[ ] 9. Evaluate a separate Oracle worker only if deployment needs justify it
+       and Always Free capacity is available.
+[x] 10. Harden source deployment packaging before release: explicit HF source
+        allowlist, explicit Docker copies, and private-data context exclusions.
+
+IMPLEMENTED INCREMENT 1 — PUBLIC RUNTIME PRIVACY BOUNDARY
+--------------------------------------------------------
+- Added access_control.py with server-owned RuntimePolicy and a read-only
+  PublicCollection view. Unknown modes fail startup explicitly.
+- APP_MODE defaults to public_demo. Vector queries and lexical corpus reads
+  apply visibility=public; extra caller filters are combined, never substituted.
+- Legacy/unclassified records are not implicitly public. New indexing assigns
+  visibility=private, even if an incoming chunk claims visibility=public.
+- Public startup does not open memory.json. Prompt memory, UI summaries, save
+  handlers, and uploads cannot use/mutate legacy shared personal state.
+- Upload and save handlers enforce the boundary before local file access,
+  provider calls, S3 writes, or indexing, including direct handler/API calls.
+- The public launch also sets Gradio's upload size limit to zero so file bodies
+  are rejected before the framework stages them for the ingestion handler.
+  Local/private uploads have a 20 MB per-file framework limit.
+- The Gradio memory/save and upload UI is hidden in public mode; enforcement
+  remains in the backend rather than relying on hidden controls.
+- Public citation generation requires an approved exact source_pdf_key, not
+  filename reconstruction. Parsing now preserves the full source key, indexing
+  retains it, and both search modes carry it to citation generation.
+- Citation-image cache identities include exact source key, chunk ID, bounds,
+  page, and render options, preventing cross-source filename collisions.
+  Immutable source-version cache identities remain part of the next stage.
+- Public BM25 views rebuild from filtered records to prevent reuse of private
+  caches and reflect visibility revocation. This intentionally favors privacy
+  over cache performance for the small demo; generation-aware scoped caches
+  are planned with durable document versions.
+- Public trace capture is disabled, raw query/tool arguments and guardrail
+  reasons are no longer logged, and public handler errors are generic.
+- Failed web chat turns operate on a copied history and commit only on success,
+  rather than leaving partial tool cycles in session state.
+- local_private preserves single-user memory and ingestion, binds to loopback,
+  rejects --share, and fails in a hosted HF environment. It is not a multi-user
+  authentication solution. Compose publishes only to the host loopback address.
+- Strict CORS is enabled. Public Gradio file serving blocks known local memory,
+  database, environment, and private document directories.
+- Added manage_public_corpus.py for explicit offline publication/revocation of
+  selected reviewed chunk IDs. It validates IDs/source metadata before update,
+  never reads chunk text, and has no web endpoint.
+- README.md and .env.example document the modes and publication workflow.
+
+IMPLEMENTED INCREMENT 2 — SOURCE-ONLY DEPLOYMENT PACKAGING
+---------------------------------------------------------
+- deploy.py uses an exact runtime source allowlist. No local databases,
+  documents, chunks, personal memory, notebooks, or archives are upload targets.
+- Importing deploy.py no longer executes deployment. Only its main entry point
+  invokes the SDK; tests replace the SDK with a mock.
+- Dockerfile copies explicit runtime files instead of COPY . .
+- .dockerignore also excludes environment variants, Chroma, source/parsed
+  documents, archives, evaluation artifacts, and local harness configuration.
+- Source-only deployments do not provision a corpus. A fresh deployment needs
+  an explicitly provisioned approved dataset or the upcoming durable datastore.
+- Existing remote artifacts are not removed by an allowlist upload. A later
+  audit and explicit cleanup of the existing Space is required before release.
+  No remote files have been inspected, changed, or deleted in this work.
+
+VERIFICATION ACTUALLY EXECUTED
+------------------------------
+- Before code changes: offline pytest invocation with mock environment values,
+  PYTHON_DOTENV_DISABLED=1, disabled tracing, no bytecode, and disabled pytest
+  cache provider: 4 existing tests passed, with 15 warnings.
+- PYTHONDONTWRITEBYTECODE=1 make test after the complete privacy increment:
+  24 passed, 24 warnings.
+- PYTHONDONTWRITEBYTECODE=1 make test after packaging changes:
+  26 passed, 24 warnings in the local Python 3.12.7 environment.
+- Final PYTHONDONTWRITEBYTECODE=1 make test after adding the framework upload
+  boundary: 27 passed, 24 warnings. An in-process ASGI TestClient verified a
+  real /gradio_api/upload request returns 413 for a non-empty file body and
+  does not create a staged upload directory. No external HTTP service ran.
+- make lint: passed; configured flake8 E9,F63,F7,F82 checks reported 0 issues.
+- git diff --check: passed with no whitespace errors.
+- New tests use real temporary Chroma collections and deterministic fixture
+  embeddings to check public/private/legacy filtering, lexical cache isolation
+  and revocation, pre-reranker scope, exact-source citations, publication,
+  session/prompt/UI memory isolation, mutation rejection, startup mode checks,
+  and failed-turn rollback. Providers and citation generation are mocked.
+- Deployment tests exercise the installed HF SDK's file filtering with
+  synthetic candidate paths and a mocked upload call; no remote upload occurs.
+- tests/conftest.py disables dotenv loading and tracing and supplies mock
+  credentials. Tests never read workspace credentials or production data.
+- Warnings are dependency deprecations, existing SDK MagicMock warnings, and
+  a fixture embedding-function compatibility warning; no test failed.
+- docker --version: Docker CLI 29.0.1 is installed.
+- docker info --format '{{.ServerVersion}}': failed because the Docker daemon
+  is not running. A production container build was not run.
+- Inspected the code diff and new implementation/test files. The cached Git
+  diff is empty; no files were staged, committed, or deployed.
+
+REMAINING LIMITS AND NEXT STEP
+-------------------------------
+- These increments establish an anonymous-public boundary, not completed
+  Supabase authentication or durable user-owned storage. Full hosted uploads
+  and persistent personal memory remain pending that integration.
+- No existing private memory or corpus was read, migrated, modified, published,
+  or deleted. Until an approved corpus is provisioned, the new public runtime
+  will correctly return no documents from an unclassified index.
+- No HF/browser end-to-end deployment, real provider/inference calls, ADE jobs,
+  production dependency resolution, container build, or load benchmark ran.
+  Local checks are not a claim that the full target architecture is ship-ready.
+- Existing mutable ingestion output, local/private memory atomic writes,
+  provider routing/retry concurrency, and durable job recovery still need the
+  follow-on fixes documented in the historical review.
+- Next: configure Supabase Free identity and user-scoped persistence, then
+  re-enable hosted memory and uploads through authenticated ownership checks.
+  Project creation and OAuth setup need the user's account. Configure sensitive
+  values in local environment/HF Secrets, never in this report or chat.
+- Deployment packaging has been implemented before the Supabase milestone;
+  roadmap item 10 records this completed dependency rather than delaying the
+  confidentiality fix until the end of the project.
+
+6. GUEST-FIRST SUPABASE IDENTITY AND PRIVATE MEMORY INCREMENT
+============================================================
+Recorded: 2026-10-07
+
+USER CONTEXT AND ACCESS DECISION
+--------------------------------
+- The user created a Supabase project named AgenticRAG. No project credentials
+  or project URL were supplied to this session, and the hosted project was not
+  inspected, configured, or mutated by the agent.
+- The user clarified that interview visitors should not need GitHub signup or
+  another registration step just to try the app. Registration is acceptable
+  later for recoverable memory and cross-device sessions.
+- Ordinary public chat therefore remains unchanged in principle: no account,
+  no Supabase requests, and no Auth user creation just to search public content.
+- Added an explicit Start private demo session action for temporary isolated
+  memory. Supabase anonymous Auth supplies a verified identity without email,
+  password, social login, or other personally identifying registration fields.
+- This is temporary guest memory, not a completed permanent account system.
+  Cookies expire within at most one hour; no refresh token is retained.
+  Reloads/restarts can restore memory while the cookie and stable encryption
+  key remain valid. Discarded/expired credentials have no account recovery.
+- Public uploads remain denied until owner-scoped document storage, versions,
+  and durable ingestion are implemented. Local/private ingestion is retained.
+
+RESEARCH VERIFIED AGAINST OFFICIAL DOCUMENTATION
+------------------------------------------------
+- https://supabase.com/docs/guides/auth/auth-anonymous
+  Anonymous sign-in creates an Auth user and uses the authenticated SQL role.
+  It is not the unauthenticated anon API role. Anonymous users cannot recover
+  their account normally after signing out, clearing browser data, or moving
+  devices. Permanent identity linking is supported but is not implemented here.
+- https://supabase.com/docs/guides/auth/auth-captcha
+  Supabase supports Turnstile and hCaptcha. CAPTCHA must be enabled in the
+  project's Auth settings; providing a frontend site key alone is insufficient.
+- https://developers.cloudflare.com/turnstile/plans/
+  Turnstile's Free plan supports up to 20 widgets, 10 hostnames per widget,
+  all widget types, and unlimited challenges/verification requests. It can be
+  used without buying another Cloudflare product.
+- Supabase documents anonymous-sign-in limits of 30 requests/hour per IP and
+  recommends CAPTCHA against database-growth abuse. Server-originated signups
+  can share an IP limit across visitors. Ordinary public chat consumes none of
+  these signup requests; repeated valid-session starts reuse the same identity.
+- Supabase does not automatically clean up anonymous Auth users. An operator
+  retention policy and cleanup are necessary for the free database budget.
+- https://supabase.com/docs/guides/auth/passwords
+  Email Auth is available, but default email sending is best-effort and limited
+  to two emails/hour. This helped motivate guest-first tryouts rather than
+  requiring email confirmation for every interviewer.
+- https://supabase.com/docs/guides/auth/social-login/auth-github
+  GitHub OAuth needs a provider application and Supabase configuration. It was
+  researched, not selected or configured as a mandatory entry requirement.
+- https://supabase.com/docs/guides/auth/sessions/pkce-flow
+  PKCE/account linking remains relevant to a later permanent-account increment.
+- https://supabase.com/docs/guides/database/postgres/row-level-security
+  Grants and policies both matter. Every memory request uses the verified
+  user's JWT; no service-role bypass is used. Anonymous Auth identities are
+  authenticated owners, while the plain anon role cannot access memory.
+
+IMPLEMENTATION AND DATA FLOW
+----------------------------
+1. Public chat: existing session-local history and approved-public retrieval;
+   no Supabase call unless a valid private-session cookie is present.
+2. Explicit private-session start: same-origin POST, bounded request body,
+   Turnstile challenge token, Supabase anonymous signup, and trusted Auth API
+   identity verification. User metadata and locally decoded JWT claims never
+   supply the authorization identity.
+3. Browser receives an encrypted HttpOnly cookie, Secure under HTTPS and
+   SameSite=Lax. Browser JS/UI state and LLM inputs receive no Auth JWT or
+   refresh token. Private features require the top-level direct app URL rather
+   than an embedded iframe that can block third-party cookies.
+4. Each private callback decrypts/checks cookie expiry and Origin, asks Supabase
+   Auth to verify identity, and queries only that owner's indexed memory row.
+   Read responses are additionally checked for owner, shape, revision, and
+   closed-session status before they can enter prompts or the memory panel.
+5. Save: existing LLM summarization works on a copied own-memory snapshot.
+   Extraction failure does not pretend to save. Validated data is written using
+   a SECURITY INVOKER RPC deriving its owner from auth.uid(), with a revision
+   compare-and-swap. Concurrent stale writers fail rather than overwrite data;
+   the app does not automatically repeat non-idempotent writes or LLM extraction.
+6. Forget: an atomic RPC scrubs personal fields and retains an irreversible
+   closed marker. Closed identities cannot reopen by direct update, deletion,
+   an initial revision-0 save, or a save already in flight. This avoids the real
+   delete-then-recreate race discovered during implementation.
+7. Return to public chat: clears local credentials and context even if storage
+   is unavailable, without claiming remote deletion. Expired credentials cannot
+   scrub remote memory; retention cleanup is explicit rather than falsely
+   reporting that personal data was deleted.
+8. Browser-session lifecycle guards use existing Gradio server-side State.
+   Ending/switching/clearing a session invalidates pending outputs, including
+   slow LLM replies and memory-panel refreshes. An old private response cannot
+   repopulate a newer public session. Private saves are canceled if lifecycle
+   changes occur during extraction. Public chat is preserved when opting in.
+
+FILES AND CONFIGURATION
+------------------------
+- supabase_backend.py: stateless bounded REST calls, safe errors, public-key
+  validation, trusted identity verification, memory validation, read/write RPCs.
+- private_sessions.py: encrypted-cookie handling, Origin checks, guest-session
+  start/forget/end routes, and public-site-key-only Turnstile frontend callbacks.
+- app.py: optional integration, session ownership/lifecycle guards, current-user
+  prompts/panel, save handling, and no AWS client initialization when no bucket
+  is configured. Public mutation/retrieval restrictions remain in force.
+- gemini_helpers.py: opt-in strict extraction failure handling for remote saves;
+  legacy local/private behavior is retained.
+- config.py and .env.example: SUPABASE_ENABLED defaults false. Enabled sessions
+  require SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, SESSION_COOKIE_KEY,
+  APP_PUBLIC_URL, and TURNSTILE_SITE_KEY in public_demo mode.
+- supabase/migrations/202610070001_user_memory.sql: bounded memory table,
+  ownership RLS, grants, revision-checked save RPC, and scrub/close RPC.
+- SUPABASE_SETUP.md: project/provider/CAPTCHA configuration, encrypted-cookie
+  key generation instructions, deployment fields, lifecycle limits, and checks.
+  Secret values belong in environment/HF Secrets, never Git or this report.
+- tests/test_supabase_memory.py: synthetic API and real in-process Gradio HTTP
+  regression cases, including concurrent lifecycle tests.
+- supabase/tests/user_memory_rls.test.sql: 28 PostgreSQL/pgTAP policy and
+  lifecycle assertions with synthetic users inside a rollback transaction.
+- tests/fixtures/postgres_auth_fixture.sql: minimal Auth UID/role contract for
+  disposable plain Postgres only; never apply this fixture to the hosted project.
+- tests/run_memory_rls.sh and Makefile test-db: reproducible isolated SQL checks.
+  CI now runs them. Containers expose no ports and mount no host data; their
+  temporary database storage is removed with the containers.
+- deploy.py and Dockerfile include the new runtime modules in exact source
+  copies/allowlists. The setup guide and exact DDL migration are allowlisted;
+  private datasets, credentials, and runtime databases remain excluded.
+
+PRODUCTION IMAGE DEFECT VERIFIED AND FIXED
+-----------------------------------------
+- The earlier dependency-resolution uncertainty became a verified P1 build
+  bug: selecting modern langchain-core wheels while pinning langsmith==0.1.66
+  failed with ResolutionImpossible in the final installation stage.
+- requirements-prod.txt now pins the LangSmith/LangGraph/core versions passing
+  locally (0.5.0 / 1.0.5 / 1.5.3), removes the duplicate embedding requirement,
+  pins BM25, and declares the cookie encryption dependency.
+- The builder resolves a complete compatible wheel set; final installation
+  uses --no-index with that wheel set instead of forcing unrelated latest
+  direct wheels and resolving transitive packages over the network again.
+- A subsequent build selected large CUDA dependencies for the CPU-only
+  standalone image and timed out during export. Docker now explicitly selects
+  the official torch 2.8.0 CPU wheel before resolving the remaining set. This
+  materially reduces unnecessary deployment dependencies; it does not change
+  the HF Gradio/ZeroGPU environment or claim GPU benchmarks ran.
+
+VERIFICATION ACTUALLY EXECUTED
+------------------------------
+- PYTHONDONTWRITEBYTECODE=1 make test: final complete suite passed 60 tests,
+  with 24 existing dependency/fixture warnings. Providers/CAPTCHA are mocked,
+  not live. Concurrent in-process HTTP tests verify pending private answers and
+  delayed memory refreshes cannot restore private content after returning public.
+- make test-db: 28 pgTAP assertions passed on PostgreSQL 17.11 in a disposable
+  Docker container using the documented minimal Auth role/UID fixture. It
+  verified real grants, ownership RLS, RPC revisions, scrub/close behavior,
+  idempotent Forget, and prevention of initial/stale memory resurrection.
+  This is not a hosted GoTrue/PostgREST or Supabase-project verification.
+- make lint: passed the repository's configured flake8 checks with 0 issues.
+- git diff --check: passed. Inspected staged/unstaged diffs and relevant new
+  implementation, SQL, setup, and test files; no changes were staged or committed.
+- Generated start/forget/end JS callbacks were piped to node --check: passed
+  syntax validation under Node v24.3.0. This is not a real-browser CAPTCHA test.
+- docker build -t agenticrag-supabase-check:local .: initial dependency conflict,
+  then a CUDA-heavy export timeout; after the dependency/CPU corrections the
+  ARM64 production image built successfully.
+- docker run --rm --network none --entrypoint python
+  agenticrag-supabase-check:local -m pip check: no broken requirements found.
+- A network-disabled container with mock configuration imported app, the CPU
+  CrossEncoder class, and the Supabase/session modules and round-tripped an
+  encrypted fixture cookie successfully. No model weights, inference, real
+  credential validation, or live API/provider operations ran in this smoke check.
+- supabase --version and psql --version: host tools unavailable. Docker became
+  available for this increment, allowing the local SQL/image checks above.
+- No cloud deployment, remote migration, OAuth signup, real CAPTCHA request,
+  live Supabase Auth/storage request, or private corpus/memory access occurred.
+
+REMAINING REQUIRED SETUP AND HIGH-VALUE FOLLOW-UPS
+------------------------------------------------
+- Apply the exact migration to the user's dedicated project, enable anonymous
+  Auth and Turnstile protection, configure the listed environment/HF values,
+  and verify live host Origin/cookies/CAPTCHA/RLS with two browser identities.
+  SUPABASE_ENABLED remains false in the versioned example until this setup is
+  complete. No live-ready or full production-ready claim is made from mocks.
+- Automate the documented anonymous-identity retention cleanup before sustained
+  public usage; no automatic cleanup is implemented. Deleting an Auth identity
+  cascades to its memory and tombstone. Recoverable permanent account linking
+  needs a separate session-revocation/merge design rather than treating closed
+  temporary guest identities as reusable permanent profiles.
+- Preserve the public-only corpus boundary while adding authorized owned
+  documents and resumable ingestion. Guest memory is not permission to upload
+  or administer a shared collection.
+- Fully lock transitive dependencies and verify the HF/x86 deployment alongside
+  the tested ARM64 standalone image; build compatibility is not inference,
+  availability, scaling, or GPU-performance evidence.
+
+7. LOCAL RESTART AND INITIAL HOSTED CONFIGURATION VERIFICATION
+==============================================================
+Recorded: 2026-10-07, after the user reported completing setup.
+
+ACTUALLY CHECKED
+----------------
+- Loaded configuration through config.py without reading or printing the .env
+  file directly. Reported only booleans/mode, never credential values:
+  public_demo, SUPABASE_ENABLED=true, local Origin matches
+  http://localhost:7861, URL/public-key/Fernet/site-key validation passed.
+- Identified the existing port-7861 listener and confirmed its command was
+  python app.py --port 7861 before terminating that application process.
+- Restarted python -u app.py --port 7861 in the background with nohup. The
+  local UI returned HTTP 200. Private-session controls and start/forget/end
+  routes are installed. An ordinary public visit created no private cookie.
+- Used the configured publishable credential for read-only hosted checks:
+  GET /auth/v1/settings returned HTTP 200.
+  Its public external.anonymous_users flag was false. The initial check for
+  external.anonymous did not find the flag; the corrected name exposed the
+  actual disabled configuration. No application-code change was needed.
+- GET /rest/v1/user_memories?select=user_id&limit=0 without a user JWT returned
+  HTTP 401 with PostgreSQL code 42501. Unauthenticated memory access is denied.
+  No personal rows or record contents were retrieved.
+- The public Auth settings response did not expose a CAPTCHA-enabled flag.
+  Hosted Turnstile configuration is therefore not asserted as verified.
+
+CURRENT BLOCKER AND NEXT CHECKS
+-------------------------------
+- Anonymous Auth remains disabled in the project addressed by the configured
+  Supabase URL. SUPABASE_ENABLED=true is an application setting, not a provider
+  configuration change. Enable Anonymous Sign-Ins in that project's
+  Authentication -> Sign In / Providers settings and save it, then recheck
+  external.anonymous_users before trying to create a private session.
+- If the dashboard shows it enabled, confirm the dashboard project matches
+  the configured URL; do not expose keys or other credentials in the report.
+- No anonymous account was created by the agent, no private memory was written,
+  and no hosted migration/configuration or HF deployment was performed.
+- The CAPTCHA challenge must be completed in a browser. Authenticated memory
+  saving, closing/scrubbing, reload behavior, and two-browser isolation remain
+  pending; unauthenticated denial alone does not prove those behaviors.
+- The local app is running at http://localhost:7861. Use that exact origin for
+  private-session actions. The running HF Space remains unchanged.
+
+END OF CONSOLIDATED REVIEW

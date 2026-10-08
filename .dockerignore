@@ -4,7 +4,7 @@
 .gitattributes
 
 # Environments
-.env
+.env*
 .venv
 env/
 venv/
@@ -36,6 +36,12 @@ MANIFEST
 
 # Data and Models
 memory.json
+chroma_db/
+documents/
+document_chunks/
+*.zip
+eval/
+.opencode/
 images/
 input/
 output/

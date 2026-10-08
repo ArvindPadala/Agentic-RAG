@@ -24,6 +24,10 @@ import re
 import time
 import argparse
 import requests
+import os
+from copy import deepcopy
+from pathlib import Path
+from uuid import uuid4
 
 try:
     import spaces
@@ -38,6 +42,8 @@ import gradio as gr
 from config import settings
 from utils.logger import get_logger
 from upload_handler import make_upload_fn
+from supabase_backend import SupabaseBackend, SupabaseError
+from private_sessions import PrivateSessions
 
 logger = get_logger("app")
 
@@ -133,6 +139,19 @@ def format_memory_status(memory: dict) -> str:
     return "\n".join(lines)
 
 
+def runtime_memory_status(memory, policy):
+    if policy.is_public:
+        return ("### Session Privacy\n"
+                "Chat context is scoped to this browser session. "
+                "Persistent personal memory is disabled in public guest mode.")
+    return format_memory_status(memory)
+
+
+def load_runtime_memory(memory_file, policy):
+    # Do not even open legacy personal memory in a public process.
+    return {} if policy.is_public else load_memory(memory_file)
+
+
 # We initialize the search UI state to match the radio button's default value
 DEFAULT_SEARCH_LABEL = "Elite Hybrid Search (RRF + Reranker)"
 
@@ -155,7 +174,7 @@ def is_overload_error(e: Exception) -> bool:
 # ── Core chat function ──────────────────────────────────────────────────
 
 def make_chat_fn(gemini_client, memory, memory_file,
-                 s3_client, collection, bucket_name):
+                 s3_client, collection, bucket_name, policy=None, private_sessions=None):
     """
     Returns the Gradio chat handler.
 
@@ -163,11 +182,32 @@ def make_chat_fn(gemini_client, memory, memory_file,
       {"role": "user" | "assistant", "content": "..."}
     (The old [[user, bot], ...] tuple format causes 'data incompatible with keys'.)
     """
+    policy = policy or settings.ACCESS_POLICY
+    memory = {} if policy.is_public else memory
+
     def chat(user_message: str, history: list, conversation_history: list,
-             search_type: str, use_decomposition: bool, use_guardrail: bool):
+             search_type: str, use_decomposition: bool, use_guardrail: bool,
+             owner_id=None, request=None):
+        request_memory = memory
+        current_owner = None
+        snapshot = None
+        if policy.is_public and private_sessions is not None:
+            try:
+                snapshot = private_sessions.load_for_request(request)
+            except SupabaseError as error:
+                # Expired/unverifiable identity cannot reuse private context.
+                return [], [], "", str(error), None
+            current_owner = snapshot.user_id if snapshot else None
+            request_memory = snapshot.memory if snapshot else {}
+        if owner_id != current_owner:
+            # Switching/forgetting identities must clear prior private answers,
+            # not merely change the next prompt's persistent-memory field.
+            history, conversation_history = [], []
+        memory_status = (format_memory_status(request_memory) +
+                         "\n\n*Private demo memory: available only during this temporary session.*"
+                         if snapshot else runtime_memory_status(request_memory, policy))
         if not user_message.strip():
-            return history, conversation_history, [
-            ], format_memory_status(memory)
+            return history, conversation_history, "", memory_status, current_owner
 
         # 1. Determine Search Type
         use_hybrid = "Hybrid" in search_type
@@ -180,13 +220,14 @@ def make_chat_fn(gemini_client, memory, memory_file,
             s3_client=s3_client,
             bucket=bucket_name,
             use_hybrid=use_hybrid,
-            use_reranker=use_reranker
+            use_reranker=use_reranker,
+            policy=policy,
         )
         tool_map = {"search_knowledge_base": search_fn}
 
         # 3. Create generation config with the specific tool and memory
         from agent import build_agent_config
-        generation_config = build_agent_config(search_tool, memory)
+        generation_config = build_agent_config(search_tool, request_memory)
 
         # 4. Use the resilient auto-routing from GeminiRouter
         # GeminiRouter handles the actual fallback logic
@@ -197,10 +238,13 @@ def make_chat_fn(gemini_client, memory, memory_file,
 
         # Run the agent
         start_time = time.time()
+        # Commit a turn only on success; a failed multi-tool cycle must not
+        # leave half of another request's context in session state.
+        working_history = deepcopy(conversation_history)
         try:
             raw_response = run_agent_turn(
                 user_message=user_message,
-                conversation_history=conversation_history,
+                conversation_history=working_history,
                 gemini_client=gemini_client,
                 generation_config=generation_config,
                 tool_map=tool_map,
@@ -223,15 +267,15 @@ def make_chat_fn(gemini_client, memory, memory_file,
                     "👉 **Wait a moment and retry.**"
                 )
             else:
-                error_msg = f"❌ **Unexpected error:** {e}"
+                error_msg = ("❌ **The request could not be completed. Please retry.**"
+                             if policy.is_public else f"❌ **Unexpected error:** {e}")
 
             history = history + [{"role": "assistant", "content": error_msg}]
-            # Pop the last user turn from conversation_history so the agent
-            # doesn't see a failed partial turn on the next attempt
-            if conversation_history:
-                conversation_history.pop()
-            return history, conversation_history, "<div style='text-align:center; color:#888; padding:20px;'>Error occurred.</div>", format_memory_status(
-                memory)
+            return (history, conversation_history,
+                    "<div style='text-align:center; color:#888; padding:20px;'>Error occurred.</div>",
+                    memory_status, current_owner)
+
+        conversation_history = working_history
 
         # Extract visual grounding image URLs from the response text
         image_urls = extract_image_urls(raw_response)
@@ -253,15 +297,39 @@ def make_chat_fn(gemini_client, memory, memory_file,
         history = history + \
             [{"role": "assistant", "content": display_response}]
 
-        return history, conversation_history, html_content, format_memory_status(
-            memory)
+        return history, conversation_history, html_content, memory_status, current_owner
 
     return chat
 
 
-def make_save_fn(gemini_client, memory, memory_file):
+def make_save_fn(gemini_client, memory, memory_file, policy=None, private_sessions=None):
     """Save memory to disk."""
-    def save(conversation_history):
+    policy = policy or settings.ACCESS_POLICY
+
+    def save(conversation_history, owner_id=None, scope_state=None, request: gr.Request = None):
+        generation = scope_state.get("generation") if scope_state is not None else None
+        if policy.is_public and private_sessions is not None:
+            try:
+                snapshot = private_sessions.load_for_request(request, required=True)
+                if owner_id != snapshot.user_id:
+                    return "Your session changed. Start a fresh chat before saving memory."
+                if not conversation_history:
+                    return "⚠️ No conversation to save yet."
+                updated = update_memory_from_conversation(
+                    deepcopy(snapshot.memory), conversation_history, gemini_client,
+                    raise_on_error=True,
+                )
+                if scope_state is not None and scope_state.get("generation") != generation:
+                    return gr.skip()
+                private_sessions.backend.save_memory(snapshot, updated)
+                if scope_state is not None and scope_state.get("generation") != generation:
+                    return gr.skip()
+                return "✅ Private demo memory saved for this temporary session."
+            except SupabaseError as error:
+                return str(error)
+            except Exception:
+                return "Private memory could not be extracted or saved. Please retry."
+        policy.require_local_mutation()
         if not conversation_history:
             return "⚠️ No conversation to save yet."
         updated = update_memory_from_conversation(
@@ -275,21 +343,30 @@ def make_save_fn(gemini_client, memory, memory_file):
 # ── Gradio UI ───────────────────────────────────────────────────────────
 
 def build_ui(gemini_client, memory, memory_file,
-             s3_client, collection, bucket_name):
+             s3_client, collection, bucket_name, policy=None, private_sessions=None):
+    policy = policy or settings.ACCESS_POLICY
+    memory = {} if policy.is_public else memory
     chat_fn = make_chat_fn(
         gemini_client,
         memory,
         memory_file,
         s3_client,
         collection,
-        bucket_name)
-    save_fn = make_save_fn(gemini_client, memory, memory_file)
-    upload_fn = make_upload_fn(s3_client, bucket_name, collection)
+        bucket_name,
+        policy=policy, private_sessions=private_sessions)
+    save_fn = make_save_fn(gemini_client, memory, memory_file, policy=policy,
+                           private_sessions=private_sessions)
+    upload_fn = make_upload_fn(s3_client, bucket_name, collection, policy=policy)
 
     with gr.Blocks(title="Document RAG Agent") as demo:
 
         # ── Session state ──────────────────────────────────────────────────
         conv_state = gr.State([])
+        owner_state = gr.State(None)
+        # This mutable server-side state is unique per Gradio browser session.
+        # Lifecycle callbacks invalidate pending outputs without a global cache
+        # or trusting client-provided ownership/generation identifiers.
+        scope_state = gr.State({"generation": None})
         # tracks selected retrieval engine
         search_state = gr.State(DEFAULT_SEARCH_LABEL)
         decomp_state = gr.State(False)
@@ -306,13 +383,30 @@ def build_ui(gemini_client, memory, memory_file,
                 )
             with gr.Column(scale=1):
                 gr.Markdown(
-                    """
+                    ("""
+                    **Public Showcase:**
+                    Search the explicitly approved public documents.
+                    Each browser session has its own chat context.
+                    No account is needed to try the public documents.
+                    """ if policy.is_public else """
                     **Quick Start:**
                     1. **Query**: Ask a question below to search.
                     2. **Upload**: Add new documents in Tab 2.
                     3. **Architecture**: Explore the system in Tab 3.
-                    """
+                    """)
                 )
+
+        if private_sessions is not None:
+            with gr.Accordion("Optional private demo session — no sign-up", open=False):
+                gr.Markdown(
+                    "Public chat works without an account. Start a temporary private "
+                    "session to try isolated memory, protected by a verification challenge. "
+                    "This session expires within one hour and is not recoverable on "
+                    "another device. Use the direct app URL, not an embedded iframe.")
+                start_session_btn = gr.Button("Start private demo session")
+                forget_session_btn = gr.Button("Forget private memory and end session")
+                end_session_btn = gr.Button("Return to public chat (without deleting stored memory)")
+                session_status = gr.Markdown("Public guest mode")
 
         # ── Main layout ────────────────────────────────────────────────
         with gr.Tabs():
@@ -354,7 +448,7 @@ def build_ui(gemini_client, memory, memory_file,
                             btn_case3 = gr.Button("Try: What is the capital of France?", size="sm", variant="secondary")
         
                         with gr.Accordion("Agent Memory", open=False):
-                            memory_display = gr.Markdown(format_memory_status(memory))
+                            memory_display = gr.Markdown(runtime_memory_status(memory, policy))
         
                     # ── RIGHT CONTENT (Chat area) ────────────────────────────────
                     with gr.Column(scale=3):
@@ -380,7 +474,8 @@ def build_ui(gemini_client, memory, memory_file,
         
                                 with gr.Row():
                                     clear_btn = gr.Button(" Clear Chat", size="sm")
-                                    save_btn = gr.Button(" Save Memory", size="sm", variant="secondary")
+                                    save_btn = gr.Button(" Save Memory", size="sm", variant="secondary",
+                                                         visible=not policy.is_public or private_sessions is not None)
                                     save_status = gr.Textbox(show_label=False, interactive=False, placeholder="", scale=2, lines=1)
         
                             with gr.Column(scale=2, elem_classes="image-col"):
@@ -391,15 +486,15 @@ def build_ui(gemini_client, memory, memory_file,
                                 )
 
             # ── TAB 2: Manage Knowledge Base ─────────────────────────────────
-            with gr.Tab("📄 Manage Knowledge Base"):
+            with gr.Tab("📄 Manage Knowledge Base", visible=not policy.is_public):
                 gr.Markdown(
                     "### Upload New Documents\nUpload PDFs to automatically chunk, embed, and index them into ChromaDB.")
                 with gr.Row():
                     with gr.Column(scale=2):
                         upload_files = gr.File(
-                            label="Upload PDFs", file_count="multiple", file_types=[".pdf"])
+                            label="Upload PDFs", file_count="multiple", file_types=[".pdf"], visible=not policy.is_public)
                         upload_btn = gr.Button(
-                            "Upload & Index Documents", variant="primary")
+                             "Upload & Index Documents", variant="primary", visible=not policy.is_public)
                     with gr.Column(scale=3):
                         upload_status = gr.Textbox(
                             label="Status", lines=15, interactive=False)
@@ -440,9 +535,48 @@ def build_ui(gemini_client, memory, memory_file,
             return "What is the capital of France?", False, True, False, True
 
         def submit(message, history, conv_history,
-                   search_type, use_decomp, use_guardrail):
-            return chat_fn(message, history, conv_history,
-                           search_type, use_decomp, use_guardrail)
+                   search_type, use_decomp, use_guardrail, owner_id, scope,
+                   request: gr.Request):
+            generation = scope["generation"]
+            result = chat_fn(message, history, conv_history,
+                             search_type, use_decomp, use_guardrail,
+                             owner_id=owner_id, request=request)
+            if scope["generation"] != generation:
+                # A cleared/ended/switched session must not be repopulated by
+                # an old LLM response arriving after the lifecycle callback.
+                return tuple(gr.skip() for _ in result)
+            return result
+
+        if private_sessions is not None:
+            def refresh_private_session(history, conv_history, previous_owner, scope, request: gr.Request):
+                scope["generation"] = generation = uuid4().hex
+                try:
+                    snapshot = private_sessions.load_for_request(request)
+                    status = "Private demo session active" if snapshot else "Public guest mode"
+                    memory_status = format_memory_status(snapshot.memory) if snapshot else runtime_memory_status({}, policy)
+                    owner = snapshot.user_id if snapshot else None
+                    # Preserve public chat when the visitor explicitly opts in,
+                    # and preserve an unchanged private identity. Never carry
+                    # one private identity's history into another identity.
+                    keep_chat = bool(snapshot) and previous_owner in (None, owner)
+                except SupabaseError as error:
+                    status, memory_status, owner = str(error), runtime_memory_status({}, policy), None
+                    keep_chat = False
+                if scope["generation"] != generation:
+                    return tuple(gr.skip() for _ in range(6))
+                return (status, memory_status, history if keep_chat else [],
+                        conv_history if keep_chat else [], "", owner)
+
+            session_outputs = [session_status, memory_display, chatbot, conv_state,
+                               image_gallery, owner_state]
+            session_inputs = [chatbot, conv_state, owner_state, scope_state]
+            demo.load(fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
+            start_session_btn.click(fn=None, js=private_sessions.start_js()).success(
+                fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
+            forget_session_btn.click(fn=None, js=private_sessions.forget_js()).success(
+                fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
+            end_session_btn.click(fn=None, js=private_sessions.end_js()).success(
+                fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
 
         # ── Dummy GPU Function to satisfy ZeroGPU startup checks ──────────
         @gpu_decorator
@@ -457,8 +591,8 @@ def build_ui(gemini_client, memory, memory_file,
             outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
         ).then(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display],
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state, owner_state, scope_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,
@@ -470,8 +604,8 @@ def build_ui(gemini_client, memory, memory_file,
             outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
         ).then(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display],
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state, owner_state, scope_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,
@@ -483,8 +617,8 @@ def build_ui(gemini_client, memory, memory_file,
             outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
         ).then(
             fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display],
+            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state, owner_state, scope_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,
@@ -520,8 +654,8 @@ def build_ui(gemini_client, memory, memory_file,
                 conv_state,
                 search_state,
                 decomp_state,
-                guardrail_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display],
+                guardrail_state, owner_state, scope_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,
@@ -536,27 +670,30 @@ def build_ui(gemini_client, memory, memory_file,
                 conv_state,
                 search_state,
                 decomp_state,
-                guardrail_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display],
+                guardrail_state, owner_state, scope_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,
         )
 
         # Clear chat (keeps memory, resets conversation)
+        def clear_chat(owner_id, scope, request: gr.Request):
+            scope["generation"] = generation = uuid4().hex
+            result = chat_fn("", [], [], DEFAULT_SEARCH_LABEL, False, False,
+                             owner_id=owner_id, request=request)
+            return result if scope["generation"] == generation else tuple(gr.skip() for _ in result)
+
         clear_btn.click(
-            fn=lambda: (
-                [],
-                [],
-                "<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>",
-                format_memory_status(memory)),
-            outputs=[chatbot, conv_state, image_gallery, memory_display],
+            fn=clear_chat,
+            inputs=[owner_state, scope_state],
+            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
         )
 
         # Save memory button
         save_btn.click(
             fn=save_fn,
-            inputs=[conv_state],
+            inputs=[conv_state, owner_state, scope_state],
             outputs=[save_status],
         )
 
@@ -591,14 +728,22 @@ def main():
         default="models/gemini-3.6-flash",
         help="Gemini model")
     args = parser.parse_args()
+    policy = settings.ACCESS_POLICY
+    policy.validate_launch(share=args.share, hosted=bool(os.environ.get("SPACE_ID")))
+    private_sessions = None
+    if getattr(settings, "SUPABASE_ENABLED", False):
+        private_sessions = PrivateSessions(
+            SupabaseBackend(settings.SUPABASE_URL, settings.SUPABASE_PUBLISHABLE_KEY),
+            settings.SESSION_COOKIE_KEY, settings.APP_PUBLIC_URL, settings.TURNSTILE_SITE_KEY,
+        )
 
     logger.info("\n Starting Document RAG Agent UI...")
     logger.info("─" * 40)
 
     gemini_client = create_gemini_router(settings.GEMINI_API_KEYS)
-    s3_client = create_s3_client()
+    s3_client = create_s3_client() if settings.S3_BUCKET_NAME else None
     collection = load_chroma_collection(args.collection, args.chroma_path)
-    memory = load_memory(args.memory_file)
+    memory = load_runtime_memory(args.memory_file, policy)
 
     logger.info("─" * 40)
     logger.info(f" All systems ready — launching Gradio on port {args.port}")
@@ -611,15 +756,25 @@ def main():
         memory_file=args.memory_file,
         s3_client=s3_client,
         collection=collection,
-        bucket_name=settings.S3_BUCKET_NAME
+        bucket_name=settings.S3_BUCKET_NAME,
+        policy=policy,
+        private_sessions=private_sessions,
     )
     demo.queue(default_concurrency_limit=2)
     demo.launch(
-        server_name="0.0.0.0",
+        server_name="0.0.0.0" if policy.is_public else "127.0.0.1",
         server_port=args.port,
         share=args.share,
-        show_error=True,
-        strict_cors=False,
+        show_error=not policy.is_public,
+        strict_cors=True,
+        app_kwargs={"routes": private_sessions.routes()} if private_sessions else None,
+        # The framework upload route runs before our ingestion handler. Deny
+        # file bodies there as well instead of merely hiding a File component.
+        max_file_size=0 if policy.is_public else "20mb",
+        blocked_paths=[str(Path(path).resolve()) for path in (
+            args.memory_file, args.chroma_path, ".env", "documents",
+            "document_chunks", "input", "output",
+        )] if policy.is_public else None,
         ssr_mode=False,
         theme=gr.themes.Monochrome(primary_hue="slate", neutral_hue="slate"),
         css="""
