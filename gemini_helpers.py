@@ -218,7 +218,11 @@ def embed_and_index_chunks(
             "page": int(chunk.get("page", 0)),
             "bbox": json.dumps(bbox),
             "source_document": chunk.get("source_document", ""),
-            "s3_key": chunk.get("s3_key", "")
+            "s3_key": chunk.get("s3_key", ""),
+            # Ingestion never grants public access implicitly. Publication is
+            # an explicit offline administrative step until auth is available.
+            "visibility": "private",
+            "source_pdf_key": chunk.get("source_pdf_key", "")
         })
 
     # Add to ChromaDB — NO embeddings= arg → ChromaDB auto-embeds locally
@@ -306,7 +310,8 @@ def search_chroma(
             "page": meta.get("page", 0),
             "bbox": bbox,
             "source_document": meta.get("source_document", ""),
-            "s3_key": meta.get("s3_key", "")
+            "s3_key": meta.get("s3_key", ""),
+            "source_pdf_key": meta.get("source_pdf_key", "")
         })
 
     return formatted
@@ -399,7 +404,8 @@ def format_memory_for_prompt(memory: Dict) -> str:
 def update_memory_from_conversation(
     memory: Dict,
     conversation_history: List[Dict],
-    gemini_client: genai.Client
+    gemini_client: genai.Client,
+    raise_on_error: bool = False,
 ) -> Dict:
     """
     Ask Gemini to extract a summary and any user preferences/facts from
@@ -485,6 +491,9 @@ Conversation:
         logger.info("✅ Memory updated from conversation")
 
     except Exception as e:
+        if raise_on_error:
+            logger.warning("Memory extraction failed (%s)", type(e).__name__)
+            raise RuntimeError("Memory could not be extracted. Please retry.") from None
         logger.info(f"⚠️ Could not extract memory: {e}")
 
     return memory

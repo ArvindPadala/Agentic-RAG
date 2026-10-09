@@ -21,8 +21,13 @@ def get_reranker():
 
 
 def get_bm25_index(collection, collection_name):
-    if collection_name in _BM25_CACHE:
-        return _BM25_CACHE[collection_name]
+    # Never reuse an unrestricted index for a public view. Rebuild public
+    # indexes from filtered data so visibility revocation takes effect without
+    # process restart. Durable generation-keyed caches follow with versioning.
+    public_scope = getattr(collection, "access_scope", None) == "public"
+    cache_key = (str(getattr(collection, "id", id(collection))), collection_name)
+    if not public_scope and cache_key in _BM25_CACHE:
+        return _BM25_CACHE[cache_key]
 
     # Load all docs
     all_data = collection.get()
@@ -32,7 +37,7 @@ def get_bm25_index(collection, collection_name):
 
     # Tokenize
     tokenized_corpus = [re.findall(r'\w+', doc.lower()) for doc in docs]
-    bm25 = BM25Okapi(tokenized_corpus)
+    bm25 = BM25Okapi(tokenized_corpus) if tokenized_corpus else None
 
     index_data = {
         "bm25": bm25,
@@ -40,20 +45,22 @@ def get_bm25_index(collection, collection_name):
         "ids": ids,
         "metadatas": metadatas
     }
-    _BM25_CACHE[collection_name] = index_data
+    if not public_scope:
+        _BM25_CACHE[cache_key] = index_data
     return index_data
 
 
 @traceable(run_type="retriever")
 def search_chroma_hybrid(query: str, collection, n_results: int = 5,
                          use_reranker: bool = False) -> list[dict]:
-    if collection.count() == 0:
+    count = collection.count()
+    if count == 0:
         return []
 
     # 1. Vector Search
     vector_results = collection.query(
         query_texts=[query],
-        n_results=n_results * 2,
+        n_results=min(n_results * 2, count),
         include=["documents", "metadatas", "distances"]
     )
 
@@ -71,7 +78,8 @@ def search_chroma_hybrid(query: str, collection, n_results: int = 5,
     # 2. BM25 Search
     bm25_data = get_bm25_index(collection, collection.name)
     tokenized_query = re.findall(r'\w+', query.lower())
-    bm25_scores = bm25_data["bm25"].get_scores(tokenized_query)
+    bm25_scores = (bm25_data["bm25"].get_scores(tokenized_query)
+                   if bm25_data["bm25"] is not None else [])
 
     # Rank by BM25
     doc_score_pairs = [(bm25_data["ids"][i], bm25_scores[i], bm25_data["docs"][i], bm25_data["metadatas"][i])
@@ -151,6 +159,7 @@ def search_chroma_hybrid(query: str, collection, n_results: int = 5,
             "source_document": meta.get("source_document", "Unknown"),
             "page": meta.get("page", 1),
             "chunk_type": meta.get("chunk_type", "Unknown"),
+            "source_pdf_key": meta.get("source_pdf_key", ""),
             "bbox": bbox
         })
 

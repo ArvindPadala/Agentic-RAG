@@ -282,7 +282,8 @@ def ade_handler(event: dict, context) -> dict:
                             "text": chunk.get('markdown', ''),
                             "bbox": bbox,
                             "page": grounding.get('page', 0),
-                            "source_document": filename_without_ext
+                            "source_document": filename_without_ext,
+                            "source_pdf_key": key,
                         }
 
                         # Save individual chunk JSON

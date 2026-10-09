@@ -37,7 +37,7 @@ def decompose_query(raw_query: str, gemini_router: GeminiRouter,
     Takes a raw user question and asks a fast LLM model to decompose it
     into a JSON list of targeted sub-queries.
     """
-    logger.info(f"🧠 Optimizing query: '{raw_query}'")
+    logger.info("Optimizing query")
 
     config = genai_types.GenerateContentConfig(
         temperature=0.1,
@@ -61,7 +61,7 @@ def decompose_query(raw_query: str, gemini_router: GeminiRouter,
                 "Query optimizer returned invalid JSON format. Falling back to raw query.")
             return [raw_query]
 
-        logger.info(f"✅ Decomposed into {len(sub_queries)} queries: {sub_queries}")
+        logger.info("Decomposed into %s queries", len(sub_queries))
         return sub_queries
 
     except Exception as e:

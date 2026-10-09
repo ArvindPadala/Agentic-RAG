@@ -16,6 +16,7 @@ class TestAgentIntegration(unittest.TestCase):
             "metadatas": [[{"source_document": "test_doc", "page": 1}]]
         }
         mock_collection.count.return_value = 1
+        mock_collection.get.return_value = {"ids": ["id1"]}
 
         search_fn, search_tool = build_search_tool(
             mock_collection, mock_gemini, mock_s3, "test_bucket")
