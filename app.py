@@ -139,6 +139,11 @@ def format_memory_status(memory: dict) -> str:
     return "\n".join(lines)
 
 
+def format_private_memory_status(memory):
+    return (format_memory_status(memory) +
+            "\n\n*Private demo memory: available only during this temporary session.*")
+
+
 def runtime_memory_status(memory, policy):
     if policy.is_public:
         return ("### Session Privacy\n"
@@ -203,8 +208,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
             # Switching/forgetting identities must clear prior private answers,
             # not merely change the next prompt's persistent-memory field.
             history, conversation_history = [], []
-        memory_status = (format_memory_status(request_memory) +
-                         "\n\n*Private demo memory: available only during this temporary session.*"
+        memory_status = (format_private_memory_status(request_memory)
                          if snapshot else runtime_memory_status(request_memory, policy))
         if not user_message.strip():
             return history, conversation_history, "", memory_status, current_owner
@@ -302,9 +306,19 @@ def make_chat_fn(gemini_client, memory, memory_file,
     return chat
 
 
-def make_save_fn(gemini_client, memory, memory_file, policy=None, private_sessions=None):
-    """Save memory to disk."""
+def make_save_fn(gemini_client, memory, memory_file, policy=None, private_sessions=None,
+                 update_panel=False):
+    """Save memory and optionally return the confirmed memory-panel update.
+
+    Standalone callers retain the status-only contract. The UI receives both
+    outputs, without an extra Auth/read round trip or optimistic panel content.
+    """
     policy = policy or settings.ACCESS_POLICY
+
+    def result(status, panel=None):
+        if update_panel:
+            return status, gr.skip() if panel is None else panel
+        return status
 
     def save(conversation_history, owner_id=None, scope_state=None, request: gr.Request = None):
         generation = scope_state.get("generation") if scope_state is not None else None
@@ -312,31 +326,32 @@ def make_save_fn(gemini_client, memory, memory_file, policy=None, private_sessio
             try:
                 snapshot = private_sessions.load_for_request(request, required=True)
                 if owner_id != snapshot.user_id:
-                    return "Your session changed. Start a fresh chat before saving memory."
+                    return result("Your session changed. Start a fresh chat before saving memory.")
                 if not conversation_history:
-                    return "⚠️ No conversation to save yet."
+                    return result("⚠️ No conversation to save yet.")
                 updated = update_memory_from_conversation(
                     deepcopy(snapshot.memory), conversation_history, gemini_client,
                     raise_on_error=True,
                 )
                 if scope_state is not None and scope_state.get("generation") != generation:
-                    return gr.skip()
-                private_sessions.backend.save_memory(snapshot, updated)
+                    return result(gr.skip())
+                saved = private_sessions.backend.save_memory(snapshot, updated)
                 if scope_state is not None and scope_state.get("generation") != generation:
-                    return gr.skip()
-                return "✅ Private demo memory saved for this temporary session."
+                    return result(gr.skip())
+                panel = format_private_memory_status(saved.memory) if update_panel else None
+                return result("✅ Private demo memory saved for this temporary session.", panel)
             except SupabaseError as error:
-                return str(error)
+                return result(str(error))
             except Exception:
-                return "Private memory could not be extracted or saved. Please retry."
+                return result("Private memory could not be extracted or saved. Please retry.")
         policy.require_local_mutation()
         if not conversation_history:
-            return "⚠️ No conversation to save yet."
+            return result("⚠️ No conversation to save yet.")
         updated = update_memory_from_conversation(
             memory, conversation_history, gemini_client)
         memory.update(updated)
         save_memory(memory, memory_file)
-        return "✅ Memory saved!"
+        return result("✅ Memory saved!", format_memory_status(memory) if update_panel else None)
     return save
 
 
@@ -355,7 +370,7 @@ def build_ui(gemini_client, memory, memory_file,
         bucket_name,
         policy=policy, private_sessions=private_sessions)
     save_fn = make_save_fn(gemini_client, memory, memory_file, policy=policy,
-                           private_sessions=private_sessions)
+                           private_sessions=private_sessions, update_panel=True)
     upload_fn = make_upload_fn(s3_client, bucket_name, collection, policy=policy)
 
     with gr.Blocks(title="Document RAG Agent") as demo:
@@ -553,7 +568,7 @@ def build_ui(gemini_client, memory, memory_file,
                 try:
                     snapshot = private_sessions.load_for_request(request)
                     status = "Private demo session active" if snapshot else "Public guest mode"
-                    memory_status = format_memory_status(snapshot.memory) if snapshot else runtime_memory_status({}, policy)
+                    memory_status = format_private_memory_status(snapshot.memory) if snapshot else runtime_memory_status({}, policy)
                     owner = snapshot.user_id if snapshot else None
                     # Preserve public chat when the visitor explicitly opts in,
                     # and preserve an unchanged private identity. Never carry
@@ -694,7 +709,7 @@ def build_ui(gemini_client, memory, memory_file,
         save_btn.click(
             fn=save_fn,
             inputs=[conv_state, owner_state, scope_state],
-            outputs=[save_status],
+            outputs=[save_status, memory_display],
         )
 
     return demo

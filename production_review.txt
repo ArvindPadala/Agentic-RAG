@@ -22,6 +22,7 @@ CONTENTS
 5. Latest implementation roadmap and progress
 6. Guest-first Supabase identity and private memory increment
 7. Local restart and initial hosted configuration verification
+8. Browser smoke-test observations and immediate memory-panel refresh
 
 
 1. REPOSITORY OVERVIEW
@@ -1471,5 +1472,90 @@ CURRENT BLOCKER AND NEXT CHECKS
   pending; unauthenticated denial alone does not prove those behaviors.
 - The local app is running at http://localhost:7861. Use that exact origin for
   private-session actions. The running HF Space remains unchanged.
+
+8. BROWSER SMOKE-TEST OBSERVATIONS AND IMMEDIATE MEMORY-PANEL REFRESH
+===================================================================
+Recorded: 2026-10-08
+
+USER-REPORTED LIVE RESULTS
+--------------------------
+- The user completed the Turnstile challenge and successfully saved temporary
+  private memory in the original browser session.
+- Refreshing that browser restored remembered-session, fact, and preference
+  counts. This demonstrates the observed save/reload flow, not permanent or
+  cross-device account recovery.
+- An incognito window initially displayed public guest privacy information.
+  After starting its own private identity, saving its own conversation, and
+  refreshing, it showed its own distinct summary/preference rather than the
+  original session's memory. This supports separation of the two tested browser
+  identities; it is not an exhaustive adversarial authorization test.
+- Forget returned the original tab to public guest mode.
+- The supplied Table Editor screenshot shows an active record at revision 1
+  and a closed record at revision 2. The closed record's visible JSON has empty
+  facts and preferences. The summary array is truncated in the image, so its
+  complete contents are not independently confirmed from the screenshot.
+- The editor is using the privileged postgres role. Its ability to display
+  multiple records is expected and is not evidence that app users bypass RLS.
+- No user IDs, personal summaries, preference text, cookies, or keys from the
+  browser/image are reproduced in this report. The agent did not retrieve
+  personal database rows or write/delete the user's memory to verify them.
+
+VERIFIED UI BUG AND FIX
+-----------------------
+- Bug (P1 user-facing state consistency): Save Memory wrote the record and
+  updated its status message, but the event had only one output and left the
+  memory panel showing the old counts until a reload or another chat callback.
+- Trigger: save in a new private session. The operation reported success while
+  the Agent Memory panel still displayed its initial empty state.
+- app.py now opts the registered save handler into a two-output response:
+  save status and memory panel. The panel is rendered from the confirmed
+  backend save response, not the proposed extraction or a shared dictionary.
+- This adds no extra Auth/storage read and no additional LLM call. Failed saves
+  leave the panel unchanged; lifecycle changes suppress both outputs so stale
+  private content cannot return after closing/switching the session.
+- The status-only factory contract remains available for standalone callers,
+  and local/private saves can also refresh their own panel.
+- Private memory formatting is shared across chat, load, and save callbacks.
+
+VERIFICATION ACTUALLY EXECUTED
+------------------------------
+- PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/test_supabase_memory.py -q:
+  37 passed. New cases check confirmed-record rendering, conflict handling,
+  lifecycle suppression of both outputs, and an actual in-process Gradio save
+  callback returning the updated panel without a reload. Providers are mocked.
+- PYTHONDONTWRITEBYTECODE=1 make test: 64 passed, 24 existing dependency/fixture
+  warnings. No live inference or personal-memory mutation was used by tests.
+- make lint: passed, configured checks reported 0 issues.
+- docker build -t agenticrag-memory-panel-check:local .: passed using the cached
+  compatible CPU dependency layers. The existing Docker keyword-casing warning
+  remains; no HF/cloud deployment was performed.
+- Inspected unstaged and staged diffs. Staged diff was empty. git diff --check
+  passed; no files were staged or committed by the agent.
+- Confirmed the existing 7861 listener's command was python -u app.py --port
+  7861 before restarting only that process with the updated code. The restarted
+  app returned HTTP 200 at http://localhost:7861.
+- A read-only live /config check confirmed the registered save callback now
+  has two outputs. Actual browser confirmation of the new immediate refresh
+  remains a user smoke check after reloading the page.
+- A read-only hosted GET /auth/v1/settings returned HTTP 200 and
+  external.anonymous_users=true. The earlier disabled-provider blocker in
+  section 7 is now resolved. No credential values were displayed.
+- No SQL/schema changes were made in this increment; the earlier 28 local
+  policy/lifecycle checks were not repeated unnecessarily.
+
+CURRENT PROJECT POSITION
+-------------------------
+- Guest-first session identity, scoped temporary memory, reload behavior,
+  lifecycle protection, and the save-panel fix are implemented. Live browser
+  results are user-reported and local automated checks are recorded above.
+- Next high-value work: explicitly approve/provision the public showcase
+  corpus so visitors receive useful cited answers. Current public retrieval
+  excludes unclassified legacy documents by design; it does not prove the
+  underlying index is empty. The assistant's suggestion to upload when public
+  uploads are blocked should also be corrected.
+- Recoverable permanent accounts, authorized hosted uploads, immutable document
+  versions, durable ingestion jobs, automated guest retention, and measured
+  scalability remain future milestones. The running HF Space is not updated
+  by these local changes.
 
 END OF CONSOLIDATED REVIEW

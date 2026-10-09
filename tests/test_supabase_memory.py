@@ -508,3 +508,98 @@ def test_late_memory_refresh_cannot_restore_private_panel_after_ending_session()
     finally:
         release.set()
         demo.close()
+
+
+def confirmed_memory():
+    return {
+        "session_summaries": ["confirmed-summary-sentinel"],
+        "preferences": {"answer_style": "fixture preference"},
+        "facts": ["confirmed-fact"],
+    }
+
+
+def test_save_panel_uses_confirmed_record_not_extraction_proposal():
+    backend = MagicMock()
+    backend.load_memory.return_value = snapshot()
+    backend.save_memory.return_value = MemorySnapshot(A, 2, confirmed_memory(), "token-A")
+    service = sessions(backend)
+    save = make_save_fn(None, {}, "never-written.json", private_sessions=service, update_panel=True)
+    with patch("app.update_memory_from_conversation", return_value=memory("proposal-only-sentinel")):
+        status, panel = save(["synthetic conversation"], owner_id=A, request=browser_request(service))
+    assert "saved" in status
+    assert "Sessions remembered:** 1" in panel
+    assert "Preferences stored:** 1" in panel
+    assert "confirmed-summary-sentinel" in panel
+    assert "proposal-only-sentinel" not in panel
+    backend.load_memory.assert_called_once_with("token-A")
+    backend.save_memory.assert_called_once()
+
+
+def test_failed_save_leaves_panel_unchanged():
+    backend = MagicMock()
+    backend.load_memory.return_value = snapshot()
+    backend.save_memory.side_effect = MemoryConflict("Memory changed. Retry saving.")
+    service = sessions(backend)
+    save = make_save_fn(None, {}, "never-written.json", private_sessions=service, update_panel=True)
+    with patch("app.update_memory_from_conversation", return_value=memory("uncommitted-sentinel")):
+        status, panel = save(["synthetic conversation"], owner_id=A, request=browser_request(service))
+    assert "Retry saving" in status
+    assert panel == gr.skip()
+    assert "uncommitted-sentinel" not in str((status, panel))
+
+
+def test_lifecycle_change_during_save_suppresses_status_and_panel():
+    backend = MagicMock()
+    backend.load_memory.return_value = snapshot()
+    scope = {"generation": "before"}
+
+    def completed_save(*args):
+        scope["generation"] = "after"
+        return MemorySnapshot(A, 2, confirmed_memory(), "token-A")
+
+    backend.save_memory.side_effect = completed_save
+    service = sessions(backend)
+    save = make_save_fn(None, {}, "never-written.json", private_sessions=service, update_panel=True)
+    with patch("app.update_memory_from_conversation", return_value=empty_memory()):
+        result = save(["synthetic conversation"], owner_id=A, scope_state=scope,
+                      request=browser_request(service))
+    assert result == (gr.skip(), gr.skip())
+
+
+def test_gradio_save_updates_status_and_memory_panel_without_reload():
+    backend = MagicMock()
+    backend.start_guest.return_value = ("token-A", int(time.time() + 3600))
+    backend.load_memory.return_value = snapshot()
+    backend.save_memory.return_value = MemorySnapshot(A, 2, confirmed_memory(), "token-A")
+    service = sessions(backend)
+    demo = build_ui(None, {}, "never-read.json", None, MagicMock(), None, private_sessions=service)
+    app = gr.routes.App.create_app(demo, app_kwargs={"routes": service.routes()})
+
+    def turn(**kwargs):
+        kwargs["conversation_history"].append("synthetic user turn")
+        return "Synthetic answer"
+
+    try:
+        with TestClient(app, base_url=ORIGIN) as client, \
+                patch("app.run_agent_turn", side_effect=turn), \
+                patch("app.update_memory_from_conversation", return_value=empty_memory()):
+            headers = {"Origin": ORIGIN}
+            assert client.post("/private-session/start", headers=headers,
+                               json={"captcha_token": "fixture"}).status_code == 200
+            initialized = client.post("/gradio_api/api/refresh_private_session", headers=headers,
+                                      json={"data": [[], None, None, None], "session_hash": "save-panel-test"})
+            assert initialized.status_code == 200
+            submitted = client.post("/gradio_api/api/submit", headers=headers, json={
+                "data": ["synthetic question", [], None, None, None, None, None, None],
+                "session_hash": "save-panel-test",
+            })
+            assert submitted.status_code == 200
+            saved = client.post("/gradio_api/api/save", headers=headers,
+                                json={"data": [None, None, None], "session_hash": "save-panel-test"})
+            assert saved.status_code == 200
+            status, panel = saved.json()["data"]
+            assert "saved" in status
+            assert "Sessions remembered:** 1" in panel
+            assert "confirmed-summary-sentinel" in panel
+    finally:
+        demo.close()
