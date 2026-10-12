@@ -160,6 +160,7 @@ def search_chroma_hybrid(query: str, collection, n_results: int = 5,
             "page": meta.get("page", 1),
             "chunk_type": meta.get("chunk_type", "Unknown"),
             "source_pdf_key": meta.get("source_pdf_key", ""),
+            "source_url": meta.get("source_url", ""),
             "bbox": bbox
         })
 

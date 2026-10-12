@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 SPACE_SOURCE_FILES = (
     "app.py", "agent.py", "access_control.py", "config.py",
     "supabase_backend.py", "private_sessions.py",
+    "showcase_corpus.py", "showcase_sources.json", "manage_public_corpus.py", "SHOWCASE.md",
     "gemini_helpers.py", "hybrid_search.py", "llm_router.py",
     "live_guardrail.py", "query_optimizer.py", "upload_handler.py",
     "visual_grounding_helper.py", "utils/logger.py", "README.md",

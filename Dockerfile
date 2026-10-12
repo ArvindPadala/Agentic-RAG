@@ -31,6 +31,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements-p
 # notebooks, generated archives, or environment files into a public image.
 COPY app.py agent.py access_control.py config.py gemini_helpers.py \
      supabase_backend.py private_sessions.py \
+     showcase_corpus.py manage_public_corpus.py showcase_sources.json \
      hybrid_search.py llm_router.py live_guardrail.py query_optimizer.py \
      upload_handler.py visual_grounding_helper.py ./
 COPY utils/logger.py ./utils/logger.py

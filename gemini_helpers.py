@@ -192,8 +192,9 @@ def embed_and_index_chunks(
     valid_chunks = [c for c in chunks if c.get("text", "").strip()]
     logger.info(f"   └─ {len(valid_chunks)} chunks have non-empty text")
 
-    if skip_existing:
-        existing_ids = set(collection.get()["ids"])
+    if skip_existing and valid_chunks:
+        existing_ids = set(collection.get(
+            ids=[c["chunk_id"] for c in valid_chunks], include=[])["ids"])
         new_chunks = [
             c for c in valid_chunks if c.get(
                 "chunk_id",
@@ -222,7 +223,8 @@ def embed_and_index_chunks(
             # Ingestion never grants public access implicitly. Publication is
             # an explicit offline administrative step until auth is available.
             "visibility": "private",
-            "source_pdf_key": chunk.get("source_pdf_key", "")
+            "source_pdf_key": chunk.get("source_pdf_key", ""),
+            "source_url": chunk.get("source_url", "")
         })
 
     # Add to ChromaDB — NO embeddings= arg → ChromaDB auto-embeds locally
@@ -311,7 +313,8 @@ def search_chroma(
             "bbox": bbox,
             "source_document": meta.get("source_document", ""),
             "s3_key": meta.get("s3_key", ""),
-            "source_pdf_key": meta.get("source_pdf_key", "")
+            "source_pdf_key": meta.get("source_pdf_key", ""),
+            "source_url": meta.get("source_url", "")
         })
 
     return formatted

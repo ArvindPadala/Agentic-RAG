@@ -37,6 +37,7 @@ MANIFEST
 # Data and Models
 memory.json
 chroma_db/
+showcase_data/
 documents/
 document_chunks/
 *.zip

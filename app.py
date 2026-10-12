@@ -53,7 +53,8 @@ logger = get_logger("app")
 # S3 image URL pattern — matches presigned URLs like:
 # https://bucket.s3.amazonaws.com/output/.../chunk.png?X-Amz-Algorithm=...
 _S3_URL_RE = re.compile(
-    r"https://[^\s\]\[\"'>()]+\.amazonaws\.com/[^\s\]\[\"'>()]+\.png(?:\?[^\s\]\[\"'>()]+)?"
+    r"(?:https://[^\s\]\[\"'>()]+\.amazonaws\.com/[^\s\]\[\"'>()]+\.png(?:\?[^\s\]\[\"'>()]+)?"
+    r"|/gradio_api/file=[^\s\]\[\"'>()]+/citations/[a-f0-9]{64}\.png)"
 )
 
 
@@ -179,7 +180,8 @@ def is_overload_error(e: Exception) -> bool:
 # ── Core chat function ──────────────────────────────────────────────────
 
 def make_chat_fn(gemini_client, memory, memory_file,
-                 s3_client, collection, bucket_name, policy=None, private_sessions=None):
+                 s3_client, collection, bucket_name, policy=None, private_sessions=None,
+                 showcase=None):
     """
     Returns the Gradio chat handler.
 
@@ -226,6 +228,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
             use_hybrid=use_hybrid,
             use_reranker=use_reranker,
             policy=policy,
+            citation_renderer=showcase.render_citation if showcase else None,
         )
         tool_map = {"search_knowledge_base": search_fn}
 
@@ -358,7 +361,7 @@ def make_save_fn(gemini_client, memory, memory_file, policy=None, private_sessio
 # ── Gradio UI ───────────────────────────────────────────────────────────
 
 def build_ui(gemini_client, memory, memory_file,
-             s3_client, collection, bucket_name, policy=None, private_sessions=None):
+             s3_client, collection, bucket_name, policy=None, private_sessions=None, showcase=None):
     policy = policy or settings.ACCESS_POLICY
     memory = {} if policy.is_public else memory
     chat_fn = make_chat_fn(
@@ -368,7 +371,7 @@ def build_ui(gemini_client, memory, memory_file,
         s3_client,
         collection,
         bucket_name,
-        policy=policy, private_sessions=private_sessions)
+        policy=policy, private_sessions=private_sessions, showcase=showcase)
     save_fn = make_save_fn(gemini_client, memory, memory_file, policy=policy,
                            private_sessions=private_sessions, update_panel=True)
     upload_fn = make_upload_fn(s3_client, bucket_name, collection, policy=policy)
@@ -391,7 +394,8 @@ def build_ui(gemini_client, memory, memory_file,
         with gr.Row(elem_id="header"):
             with gr.Column(scale=1):
                 gr.Markdown(
-                    """
+                    "# Climate Science Research Assistant\n*Powered by Gemini · Hybrid Retrieval · Local PDF Grounding*"
+                    if showcase else """
                     # Document RAG Agent
                     *Powered by Gemini · ChromaDB · LandingAI ADE*
                     """
@@ -422,6 +426,14 @@ def build_ui(gemini_client, memory, memory_file,
                 forget_session_btn = gr.Button("Forget private memory and end session")
                 end_session_btn = gr.Button("Return to public chat (without deleting stored memory)")
                 session_status = gr.Markdown("Public guest mode")
+
+        if showcase is not None:
+            gr.Markdown(
+                "### Climate Science & Energy Transition Showcase\n"
+                "Explore **IPCC AR6**: physical science (2021), mitigation (2022), and synthesis (2023). "
+                "Answers cite these assessments, not live weather or current policy updates. "
+                "Visual references highlight retrieved text on the original PDF page. "
+                "Public uploads are unavailable.")
 
         # ── Main layout ────────────────────────────────────────────────
         with gr.Tabs():
@@ -454,13 +466,13 @@ def build_ui(gemini_client, memory, memory_file,
                         gr.Markdown("### Highlighted Use Cases")
                         with gr.Column(elem_classes="use-case-card"):
                             gr.Markdown("**Query Decomposition**\n*How to test:* Enable **Query Decomposition** above. Watch the agent split the question.")
-                            btn_case1 = gr.Button("Try: What value was used for label smoothing...", size="sm", variant="secondary")
+                            btn_case1 = gr.Button("Compare: climate risks and mitigation pathways" if showcase else "Try: What value was used for label smoothing...", size="sm", variant="secondary")
                         with gr.Column(elem_classes="use-case-card"):
-                            gr.Markdown("**Mathematical Grounding**\n*How to test:* Ensure **Elite Hybrid Search** is selected. It will extract math formulas visually.")
-                            btn_case2 = gr.Button("Try: What are the dimension values for $d_k$ and $d_v$?", size="sm", variant="secondary")
+                            gr.Markdown("**Quantitative & Visual Grounding**\n*How to test:* Use **Elite Hybrid Search** and compare cited numbers with the highlighted PDF page.")
+                            btn_case2 = gr.Button("Find: solar, wind and battery cost reductions" if showcase else "Try: What are the dimension values for $d_k$ and $d_v$?", size="sm", variant="secondary")
                         with gr.Column(elem_classes="use-case-card"):
-                            gr.Markdown("**Live Guardrail**\n*How to test:* Enable **Live Guardrail** above. It will refuse this out-of-domain question safely.")
-                            btn_case3 = gr.Button("Try: What is the capital of France?", size="sm", variant="secondary")
+                            gr.Markdown("**Evidence Boundaries & Live Guardrail**\n*How to test:* Enable **Live Guardrail**. Ask for evidence these reports do not provide; the assistant should acknowledge the gap.")
+                            btn_case3 = gr.Button("Test: unsupported city-level prediction" if showcase else "Try: What is the capital of France?", size="sm", variant="secondary")
         
                         with gr.Accordion("Agent Memory", open=False):
                             memory_display = gr.Markdown(runtime_memory_status(memory, policy))
@@ -480,7 +492,7 @@ def build_ui(gemini_client, memory, memory_file,
         
                                 with gr.Row():
                                     user_input = gr.Textbox(
-                                        placeholder="Ask about your documents... (e.g. 'What is the function of the transformer encoder?')",
+                                        placeholder=("Ask about climate risks, emissions pathways, or energy transition..." if showcase else "Ask about the approved documents..."),
                                         show_label=False,
                                         lines=2,
                                         scale=5,
@@ -527,11 +539,13 @@ def build_ui(gemini_client, memory, memory_file,
                     "This system implements an advanced, production-grade Retrieval-Augmented Generation (RAG) architecture.\n\n"
                     "- **Agent Orchestration**: Built using **LangGraph** as a cyclic state machine. Handles routing, tools, and fallback loops.\n"
                     "- **Retrieval Engine**: A 3-stage pipeline combining semantic vector search (ChromaDB), keyword search (BM25), and cross-encoder reranking (ms-marco-MiniLM).\n"
-                    "- **Visual Grounding**: Document ingestion uses **LandingAI ADE** via AWS Lambda to extract layout-aware bounding boxes and render visual citations instantly.\n"
+                    "- **Visual Grounding**: The public science corpus uses local PyMuPDF text blocks and page coordinates; the optional AWS/ADE pipeline supports layout-aware parsing. Local extraction is not OCR or structured table understanding.\n"
                     "- **Self-Correction & Guardrails**: Features a dynamic Query Optimizer and a Live Faithfulness Guardrail to intercept hallucinations before they reach the user.\n"
                 )
 
                 try:
+                    if showcase:
+                        gr.Markdown("**Historical benchmark:** The metrics below were measured on the earlier corpus, not these IPCC reports. Science-corpus retrieval smoke checks are documented in SHOWCASE.md; a full benchmark is pending.")
                     with open("EVALUATION_REPORT.md", "r") as f:
                         eval_content = f.read()
                     gr.Markdown(f"## Evaluation Metrics\n\n{eval_content}")
@@ -541,12 +555,18 @@ def build_ui(gemini_client, memory, memory_file,
         # ── Event wiring ───────────────────────────────────────────────────
 
         def set_case_1():
+            if showcase:
+                return ("Compare the physical-science and mitigation reports: how do risks differ between 1.5°C and 2°C warming, and what emissions pathways limit warming to 1.5°C? Cite each report and retain its uncertainty qualifiers.", True, False, True, False)
             return "What specific value was used for label smoothing during training, and what were its effects on the model's metrics?", True, False, True, False
             
         def set_case_2():
+            if showcase:
+                return ("According to the mitigation report, how much did solar energy, wind energy, and lithium-ion battery unit costs fall from 2010 to 2019? Cite the exact PDF page and visual evidence.", False, False, False, False)
             return "What are the specific dimension values used for $d_k$ and $d_v$ in each of the parallel attention layers?", False, False, False, False
 
         def set_case_3():
+            if showcase:
+                return ("Using only these IPCC reports, tell me the exact temperature in Hyderabad on 1 January 2035. If this cannot be established from the reports, explain why without inventing a prediction.", False, True, False, True)
             return "What is the capital of France?", False, True, False, True
 
         def submit(message, history, conv_history,
@@ -742,8 +762,13 @@ def main():
         "--model",
         default="models/gemini-3.6-flash",
         help="Gemini model")
+    parser.add_argument("--showcase", action="store_true",
+                        default=os.environ.get("SHOWCASE_ENABLED", "false").lower() == "true",
+                        help="Provision and use the isolated public IPCC science corpus")
     args = parser.parse_args()
     policy = settings.ACCESS_POLICY
+    if args.showcase and not policy.is_public:
+        parser.error("--showcase requires APP_MODE=public_demo")
     policy.validate_launch(share=args.share, hosted=bool(os.environ.get("SPACE_ID")))
     private_sessions = None
     if getattr(settings, "SUPABASE_ENABLED", False):
@@ -756,8 +781,13 @@ def main():
     logger.info("─" * 40)
 
     gemini_client = create_gemini_router(settings.GEMINI_API_KEYS)
-    s3_client = create_s3_client() if settings.S3_BUCKET_NAME else None
-    collection = load_chroma_collection(args.collection, args.chroma_path)
+    s3_client = create_s3_client() if settings.S3_BUCKET_NAME and not args.showcase else None
+    showcase = None
+    if args.showcase:
+        from showcase_corpus import prepare_showcase
+        collection, showcase = prepare_showcase()
+    else:
+        collection = load_chroma_collection(args.collection, args.chroma_path)
     memory = load_runtime_memory(args.memory_file, policy)
 
     logger.info("─" * 40)
@@ -774,6 +804,7 @@ def main():
         bucket_name=settings.S3_BUCKET_NAME,
         policy=policy,
         private_sessions=private_sessions,
+        showcase=showcase,
     )
     demo.queue(default_concurrency_limit=2)
     demo.launch(
@@ -786,6 +817,7 @@ def main():
         # The framework upload route runs before our ingestion handler. Deny
         # file bodies there as well instead of merely hiding a File component.
         max_file_size=0 if policy.is_public else "20mb",
+        allowed_paths=[str(showcase.images)] if showcase else None,
         blocked_paths=[str(Path(path).resolve()) for path in (
             args.memory_file, args.chroma_path, ".env", "documents",
             "document_chunks", "input", "output",

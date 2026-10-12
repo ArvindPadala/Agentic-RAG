@@ -23,6 +23,7 @@ CONTENTS
 6. Guest-first Supabase identity and private memory increment
 7. Local restart and initial hosted configuration verification
 8. Browser smoke-test observations and immediate memory-panel refresh
+9. Curated public climate-science corpus and custom showcase use cases
 
 
 1. REPOSITORY OVERVIEW
@@ -1557,5 +1558,82 @@ CURRENT PROJECT POSITION
   versions, durable ingestion jobs, automated guest retention, and measured
   scalability remain future milestones. The running HF Space is not updated
   by these local changes.
+
+9. CURATED PUBLIC CLIMATE-SCIENCE CORPUS AND CUSTOM SHOWCASE USE CASES
+====================================================================
+Recorded: 2026-10-12
+
+USER DIRECTION AND IMPLEMENTATION
+---------------------------------
+- The user requested a subject domain such as medicine, law, or science, public
+  PDFs, ingestion, and custom use cases demonstrating the system's features.
+- Selected climate science and energy transition, using official IPCC AR6
+  Summary for Policymakers PDFs: Physical Science Basis (2021), Mitigation
+  (2022), and Synthesis (2023). These are dated assessments, not live forecasts.
+- Downloaded all three from their official publisher URLs, pinned their SHA-256
+  checksums in showcase_sources.json, and indexed 1,711 public chunks: 463
+  physical-science, 710 mitigation, and 538 synthesis chunks.
+- showcase_corpus.py provisions a separate content-addressed collection under
+  showcase_data/chroma. Existing private/legacy corpus and memory were not read
+  or modified. All PDFs/indexes/generated images are excluded from deployment.
+- Local PyMuPDF extraction supplies text blocks, zero-based page indices and
+  normalized bounding boxes, without AWS, ADE, or LLM calls. It is not OCR or
+  structured table/chart understanding. Long blocks use 100-word passages.
+- Bounded index writes reuse the existing embedding abstraction; candidate-ID
+  lookups no longer load the entire collection's documents. Exact expected IDs
+  are verified before explicit publication and handing the collection to the UI.
+- Local citations show the public PDF page with a red box around retrieved text.
+  Only the generated citation directory is enabled for Gradio file serving.
+  Original PDFs are linked at IPCC. Displayed file-page numbers are one-based.
+- app.py --showcase (or SHOWCASE_ENABLED=true) provisions/reuses this approved
+  collection, installs local citation rendering, and displays science-specific
+  demo buttons. This mode requires public_demo and does not initialize AWS.
+- Custom cases cover cross-report warming risks/emissions pathways with query
+  decomposition, solar/wind/battery cost reductions with visual evidence, and
+  an unsupported exact city/date prediction with the optional live guardrail.
+- Prompts/tool guidance now forbid suggesting unavailable public uploads and
+  request preservation of source dates, uncertainty and confidence qualifiers.
+- SHOWCASE.md documents sources, setup, retrieval comparisons, private-memory
+  follow-ups, and extraction limits. Existing evaluation metrics are explicitly
+  labeled historical when the science showcase is active.
+
+VERIFICATION ACTUALLY EXECUTED
+------------------------------
+- PYTHONDONTWRITEBYTECODE=1 python showcase_corpus.py --download-only: passed;
+  downloaded and validated three official PDFs.
+- PYTHONDONTWRITEBYTECODE=1 PYTHON_DOTENV_DISABLED=1
+  GEMINI_API_KEY=showcase-offline-placeholder SUPABASE_ENABLED=false
+  LANGCHAIN_TRACING_V2=false python showcase_corpus.py: passed; 1,711 indexed
+  chunks. The placeholder is not a credential and no Gemini call was made.
+- Same environment with python showcase_corpus.py --check: passed; reused the
+  complete index and checked three evidence queries across vector, hybrid RRF,
+  and real CPU cross-encoder reranking (9/9), including actual PDF rendering.
+  These are retrieval smoke checks, not a full quality benchmark or LLM test.
+- PYTHONDONTWRITEBYTECODE=1 make test: 70 passed, 26 dependency/fixture warnings.
+  New cases check checksum rejection, real PDF coordinates/rendering, public
+  citation access and source-PDF denial via in-process Gradio HTTP, actual UI
+  configuration/chat image handling, repeat provisioning, both search paths,
+  incomplete-index publication rejection, upload guidance, and empty ingestion.
+- make lint: passed with 0 configured flake8 issues.
+- git diff --check: passed. Inspected unstaged/cached diffs and relevant new
+  source, manifest, documentation and tests. Cached diff was empty.
+- docker info --format '{{.ServerVersion}}': failed because Docker daemon is
+  stopped. A new production-image build could not be run.
+- No live Gemini answer, CAPTCHA/private-memory operation, HF deployment, or
+  browser end-to-end demo was run. SQL was unchanged; DB tests were not repeated.
+
+ROADMAP POSITION AND NEXT HIGH-VALUE WORK
+-----------------------------------------
+- Public showcase corpus is now provisioned locally and reproducible on hosts.
+  Enable the showcase when launching; no cloud deployment was performed.
+- The earlier section-5 live Supabase setup checkbox predates the successful
+  section-8 browser results. Guest memory is implemented/tested as recorded there;
+  permanent recoverable accounts remain optional follow-on work.
+- Next: browser/provider demo validation and a small science-specific golden
+  dataset with citation/uncertainty checks; current metrics belong to old data.
+- P1: automate guest-identity retention cleanup (still pending).
+- P0/P1: authorized user-document versions and durable ingestion jobs remain the
+  prerequisite for hosted uploads. The curated offline provisioner does not
+  implement multi-user upload authorization or general job recovery.
 
 END OF CONSOLIDATED REVIEW

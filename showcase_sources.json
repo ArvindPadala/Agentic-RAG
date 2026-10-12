@@ -1,0 +1,23 @@
+{
+  "domain": "Climate science and energy transition",
+  "sources": [
+    {
+      "id": "ipcc-ar6-synthesis-spm",
+      "title": "IPCC AR6 Synthesis Report (2023): Summary for Policymakers",
+      "url": "https://www.ipcc.ch/report/ar6/syr/downloads/report/IPCC_AR6_SYR_SPM.pdf",
+      "sha256": "3e347d04913c8fcc180c10efec372681554f3d735a7f0b2e6c7d991ddbb29c11"
+    },
+    {
+      "id": "ipcc-ar6-physical-science-spm",
+      "title": "IPCC AR6 Physical Science Basis (2021): Summary for Policymakers",
+      "url": "https://www.ipcc.ch/report/ar6/wg1/downloads/report/IPCC_AR6_WGI_SPM_final.pdf",
+      "sha256": "11bdea78a8589072d10dba518839f8d5c3d42c90fbeab859bd23cc915266f7b9"
+    },
+    {
+      "id": "ipcc-ar6-mitigation-spm",
+      "title": "IPCC AR6 Mitigation of Climate Change (2022): Summary for Policymakers",
+      "url": "https://www.ipcc.ch/report/ar6/wg3/downloads/report/IPCC_AR6_WGIII_SummaryForPolicymakers.pdf",
+      "sha256": "fdec68c55cbf64ddf2d65c468f9125c1111413fcc35aa01c94810e4548e6c778"
+    }
+  ]
+}

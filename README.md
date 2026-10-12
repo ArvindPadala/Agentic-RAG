@@ -82,6 +82,14 @@ Agentic-RAG/
 
 ## 4. Local Deployment & Usage
 
+### Public science showcase
+
+The curated **climate science and energy-transition** demo uses three official
+IPCC AR6 reports, with local PDF extraction, hybrid retrieval and highlighted
+PDF-page citations. Run `python app.py --showcase` or configure
+`SHOWCASE_ENABLED=true` on the host. See [SHOWCASE.md](SHOWCASE.md) for sources,
+provisioning, custom demo questions, memory scenarios and extraction limits.
+
 ### Runtime privacy boundary
 
 The web application now defaults to `APP_MODE=public_demo`. This mode:

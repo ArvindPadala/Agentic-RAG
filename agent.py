@@ -85,7 +85,7 @@ def load_chroma_collection(collection_name: str,
 # ── 4. Search Tool ──────────────────────────────────────────────────────
 def build_search_tool(collection, gemini_client, s3_client, bucket: str,
                       use_hybrid: bool = False, use_reranker: bool = False,
-                      policy=None):
+                      policy=None, citation_renderer=None):
     """
     Build the search_knowledge_base function that the Gemini agent will call.
 
@@ -120,7 +120,10 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
             )
 
         if not results:
-            return f"No documents found for query: '{query}'."
+            guidance = ("Public uploads are unavailable. Try a question about the approved showcase reports; "
+                        "if the corpus is unavailable, its administrator must provision it."
+                        if policy.is_public else "Index a relevant PDF using the local knowledge-base controls.")
+            return f"No documents found for query: '{query}'. {guidance}"
 
         formatted_results = []
         seen_chunk_ids = set()
@@ -140,7 +143,9 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
 
             # Visual grounding: crop the PDF region and get a presigned URL
             cropped_image_url = None
-            if source_doc and bucket and s3_client:
+            if citation_renderer is not None:
+                cropped_image_url = citation_renderer(result)
+            if not cropped_image_url and source_doc and bucket and s3_client:
                 # Public citations require an explicitly approved exact source
                 # key. Never guess a private PDF key from a filename stem.
                 source_key = result.get("source_pdf_key", "")
@@ -171,7 +176,7 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
                 result_text = (
                     f"**Source:** {source_doc} (Relevance: {score:.2f})\n"
                     f"📄 **Chunk ID:** {chunk_id}\n"
-                    f"📍 **Page:** {page}\n"
+                    f"📍 **PDF Page:** {page + 1}\n"
                     f"🏷️ **Chunk Type:** {chunk_type}\n"
                     f"🔍 **Visual Reference:** {cropped_image_url}\n\n"
                     f"**Content:**\n{content}"
@@ -179,10 +184,13 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
             else:
                 result_text = (
                     f"**Source:** {source_doc} (Relevance: {score:.2f})\n"
-                    f"📍 **Page:** {page} | 🏷️ **Type:** {chunk_type}\n\n"
+                    f"📍 **PDF Page:** {page + 1} | 🏷️ **Type:** {chunk_type}\n\n"
                     f"**Content:**\n{content}"
                 )
 
+            source_url = result.get("source_url", "")
+            if source_url.startswith("https://www.ipcc.ch/"):
+                result_text += f"\n\n**Original PDF:** {source_url}#page={page + 1}"
             formatted_results.append(result_text)
 
         return "\n\n---\n\n".join(formatted_results[:5])
@@ -233,6 +241,10 @@ IMPORTANT: When search results include visual grounding information, you MUST in
 
 Always call search_knowledge_base before answering questions about the documents.
 Always cite your sources.
+Preserve the source report's date, uncertainty ranges, confidence language, and scenario assumptions.
+PDF page numbers are file-page positions and can differ from the report's printed page labels.
+Never suggest uploading documents unless the search tool explicitly says local upload controls are available.
+If evidence is absent, explain the gap; do not imply the live guardrail ran unless it actually did.
 
 ## STRICT BOUNDARY ENFORCEMENT
 You are a strict document assistant. If the provided context does not contain the answer, or if the user asks a question entirely unrelated to the knowledge base (like basic math or chitchat), DO NOT use your internal knowledge. Politely explain that you can only answer questions based on the retrieved documents.

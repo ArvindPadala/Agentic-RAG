@@ -1,6 +1,7 @@
 # ── Generated & local-only files ─────────────────────────────────────────────
 # ChromaDB is rebuilt by running Steps 8–9b — too large to commit (~100MB+)
 chroma_db/
+showcase_data/
 
 # Lambda deployment zip — rebuilt by Step 3. 7MB binary, not useful in git
 ade_lambda.zip
