@@ -1,5 +1,5 @@
 """
-app.py — Gradio Web Interface for Medical RAG Agent
+app.py — Gradio Document Research Demo
 ====================================================
 
 Wraps agent.py in a two-column Gradio Blocks UI:
@@ -25,6 +25,7 @@ import time
 import argparse
 import requests
 import os
+from html import escape
 from copy import deepcopy
 from pathlib import Path
 from uuid import uuid4
@@ -98,7 +99,7 @@ def clean_response(text: str) -> str:
       2. 🔍 **Visual Reference:** https://...
       3. Bare S3 URLs on their own
     """
-    label = "📎 *(see image panel →)*"
+    label = "📎 *(open ‘View source pages’ to inspect the evidence)*"
 
     # 1. Markdown links whose href is an S3 image URL
     cleaned = re.sub(
@@ -161,6 +162,114 @@ def load_runtime_memory(memory_file, policy):
 # We initialize the search UI state to match the radio button's default value
 DEFAULT_SEARCH_LABEL = "Elite Hybrid Search (RRF + Reranker)"
 
+# Shared by the real launch and browser verification. Keep styling scoped to the
+# research workspace and respect Gradio's light/dark theme variables.
+DEMO_CSS = """
+    .gradio-container { max-width: 1180px !important; margin: auto; }
+    #header { padding: 8px 0; margin-bottom: 8px; border-bottom: 1px solid var(--border-color-primary); }
+    #header p { margin: 8px 0; }
+    #header h1 { font-size: clamp(1.65rem, 4vw, 2.2rem); line-height: 1.2; margin-bottom: 8px; }
+    #corpus-status { padding: 8px 0; }
+    #starter-tasks { gap: 12px; }
+    .use-case-card { border: 1px solid var(--border-color-primary); border-radius: 12px; padding: 12px; }
+    #research-workspace { gap: 20px; align-items: flex-start; }
+    #conversation-col, #evidence-col { min-width: 0 !important; }
+    #evidence-col { padding: 12px; border: 1px solid var(--border-color-primary); border-radius: 12px; }
+    #send-btn { align-self: flex-end; font-weight: 600; min-height: 44px; }
+    #research-question textarea { font-size: 1rem; }
+    #research-question textarea::placeholder { color: var(--body-text-color); opacity: 0.75; }
+    #report-cards { gap: 16px; }
+    .report-card { padding: 16px; border: 1px solid var(--border-color-primary); border-radius: 12px; }
+    .report-card h3 { font-size: 1.1rem; line-height: 1.4; }
+    .report-card p { line-height: 1.6; }
+    .report-card a { color: var(--link-text-color); text-decoration: underline; display: inline-block; padding: 10px 0; }
+    #visual-grounding-html img { max-width: 100%; height: auto; }
+    #research-chat { overflow-wrap: anywhere; }
+    button:focus-visible, a:focus-visible, textarea:focus-visible, input:focus-visible {
+        outline: 3px solid #2563eb !important; outline-offset: 3px;
+    }
+    @media (max-width: 760px) {
+        #research-workspace, #question-composer, #starter-tasks, #report-cards { flex-direction: column; }
+        #conversation-col, #evidence-col, #starter-tasks > div, #report-cards > div { width: 100%; flex-basis: auto !important; }
+        #question-composer > div { width: 100%; min-width: 0 !important; }
+        #send-btn { width: 100%; align-self: stretch; }
+        #research-chat { height: 300px !important; }
+        #header { gap: 4px; }
+    }
+"""
+
+
+def corpus_status(collection, policy):
+    """Inspect only authorized IDs; availability must not reveal private records."""
+    try:
+        count = policy.scope_collection(collection).count()
+        return ("ready", count) if count > 0 else ("empty", 0)
+    except Exception:
+        logger.warning("Authorized corpus availability check failed")
+        return "unavailable", 0
+
+
+def corpus_status_message(status, policy):
+    state, count = status
+    if state == "ready":
+        return f"**Reports ready** · {count:,} searchable passages. Ask a question and inspect its sources."
+    if state == "unavailable":
+        return "**Reports temporarily unavailable.** Recheck availability shortly. Answer generation is paused until reports are ready."
+    return ("**No public reports are ready.** The administrator needs to provision the approved corpus. Public uploads are unavailable."
+            if policy.is_public else "**No documents are ready.** Add a PDF in Manage Knowledge Base to begin.")
+
+
+def report_cards(collection, policy, showcase):
+    """Show only curated, currently authorized sources; never read private text."""
+    if showcase is None:
+        return []
+    scoped = policy.scope_collection(collection)
+    cards = []
+    for source_key, (_, source) in showcase.documents.items():
+        try:
+            available = bool(scoped.get(where={"source_pdf_key": source_key}, include=[], limit=1)["ids"])
+        except Exception:
+            available = False
+        # Source descriptors come from the server's curated manifest, not UI or
+        # LLM data. Missing sources remain visible but explicitly unavailable.
+        title = escape(source["title"])
+        url = source["url"]
+        if not url.startswith("https://www.ipcc.ch/"):
+            continue
+        cards.append(
+            f"<article class='report-card'><h3>{title}</h3>"
+            f"<p>{escape(source.get('publisher', 'IPCC'))} · {source.get('year', 'Assessment')}</p>"
+            f"<p>{escape(source.get('topics', 'Climate science assessment.'))}</p>"
+            f"<p><strong>{'Available for research' if available else 'Not currently searchable'}</strong></p>"
+            f"<a href='{escape(url, quote=True)}' aria-label='Open original PDF: {title}' target='_blank' rel='noopener noreferrer'>Open original PDF</a></article>"
+        )
+    return cards
+
+
+def demo_presets(showcase):
+    """Curated tasks: no onboarding LLM call, with explicit execution settings."""
+    if showcase:
+        return [
+            ("fact", "Find a fact", "Find energy-cost reductions and inspect the cited page.",
+             "According to the mitigation report, how much did solar energy, wind energy, and lithium-ion battery unit costs fall from 2010 to 2019? Cite the exact PDF page and visual evidence.", False, False),
+            ("compare", "Compare evidence", "Compare warming risks and emissions pathways across reports.",
+             "Compare the physical-science and mitigation reports: how do risks differ between 1.5°C and 2°C warming, and what emissions pathways limit warming to 1.5°C? Cite each report and retain its uncertainty qualifiers.", True, False),
+            ("pathway", "Explore a pathway", "Understand emissions reductions associated with a warming limit.",
+             "What global greenhouse gas emissions reductions by 2030 are associated with pathways limiting warming to 1.5°C? Explain the baseline, scenario assumptions, and uncertainty using the IPCC reports, with citations.", False, False),
+            ("limits", "Test an evidence gap", "These assessments cannot establish an exact city/date forecast.",
+             "Using only these IPCC reports, tell me the exact temperature in Hyderabad on 1 January 2035. If this cannot be established from the reports, explain why without inventing a prediction.", False, True),
+        ]
+    return [
+        ("fact", "Find a fact", "Find a key result in the available documents.",
+         "What is a key finding in the available documents? Cite its source and page.", False, False),
+        ("compare", "Compare evidence", "Compare findings and identify evidence gaps.",
+         "Compare the key findings across the available documents. Cite each source and say where evidence is missing.", True, False),
+        ("pathway", "Explore a recommendation", "Explain a recommendation and its supporting evidence.",
+         "What action do the available documents recommend, and what evidence supports it? Cite the relevant passages.", False, False),
+        ("limits", "Test an evidence gap", "Ask for a claim that the documents may not establish.",
+         "Using only these documents, establish the exact temperature in Hyderabad on 1 January 2035. If the evidence is missing, explain the gap without inventing a prediction.", False, True),
+    ]
+
 
 def is_rate_limit_error(e: Exception) -> bool:
     """Detect daily quota / rate-limit errors from Gemini API."""
@@ -214,6 +323,12 @@ def make_chat_fn(gemini_client, memory, memory_file,
                          if snapshot else runtime_memory_status(request_memory, policy))
         if not user_message.strip():
             return history, conversation_history, "", memory_status, current_owner
+
+        status = corpus_status(collection, policy)
+        if status[0] != "ready":
+            return (history + [{"role": "user", "content": user_message},
+                               {"role": "assistant", "content": corpus_status_message(status, policy)}],
+                    conversation_history, "", memory_status, current_owner)
 
         # 1. Determine Search Type
         use_hybrid = "Hybrid" in search_type
@@ -290,7 +405,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
         # Build HTML for images
         html_content = ""
         for url in image_urls:
-            html_content += f'<div style="margin-bottom:15px;"><img src="{url}" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
+            html_content += f'<div style="margin-bottom:15px;"><img src="{url}" alt="Highlighted source PDF page" style="width:100%; height:auto; border-radius:8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);"/></div>'
         if not html_content:
             html_content = "<div style='text-align:center; color:#888; padding:20px;'>No visual grounding for this response.</div>"
 
@@ -376,7 +491,8 @@ def build_ui(gemini_client, memory, memory_file,
                            private_sessions=private_sessions, update_panel=True)
     upload_fn = make_upload_fn(s3_client, bucket_name, collection, policy=policy)
 
-    with gr.Blocks(title="Document RAG Agent") as demo:
+    initial_status = corpus_status(collection, policy)
+    with gr.Blocks(title="Climate Research Demo" if showcase else "Document Research Demo") as demo:
 
         # ── Session state ──────────────────────────────────────────────────
         conv_state = gr.State([])
@@ -394,123 +510,104 @@ def build_ui(gemini_client, memory, memory_file,
         with gr.Row(elem_id="header"):
             with gr.Column(scale=1):
                 gr.Markdown(
-                    "# Climate Science Research Assistant\n*Powered by Gemini · Hybrid Retrieval · Local PDF Grounding*"
+                    "# Explore climate evidence\nAsk questions across IPCC reports and check the original sources. **No sign-up required.**"
                     if showcase else """
-                    # Document RAG Agent
-                    *Powered by Gemini · ChromaDB · LandingAI ADE*
-                    """
+                    # Explore your document evidence
+                    Ask questions and check the original sources.
+                    """ + ("No sign-up is needed for public research." if policy.is_public
+                             else "Add PDFs in Manage Knowledge Base, then ask a research question.")
                 )
-            with gr.Column(scale=1):
-                gr.Markdown(
-                    ("""
-                    **Public Showcase:**
-                    Search the explicitly approved public documents.
-                    Each browser session has its own chat context.
-                    No account is needed to try the public documents.
-                    """ if policy.is_public else """
-                    **Quick Start:**
-                    1. **Query**: Ask a question below to search.
-                    2. **Upload**: Add new documents in Tab 2.
-                    3. **Architecture**: Explore the system in Tab 3.
-                    """)
-                )
-
-        if private_sessions is not None:
-            with gr.Accordion("Optional private demo session — no sign-up", open=False):
-                gr.Markdown(
-                    "Public chat works without an account. Start a temporary private "
-                    "session to try isolated memory, protected by a verification challenge. "
-                    "This session expires within one hour and is not recoverable on "
-                    "another device. Use the direct app URL, not an embedded iframe.")
-                start_session_btn = gr.Button("Start private demo session")
-                forget_session_btn = gr.Button("Forget private memory and end session")
-                end_session_btn = gr.Button("Return to public chat (without deleting stored memory)")
-                session_status = gr.Markdown("Public guest mode")
+        readiness_display = gr.Markdown(corpus_status_message(initial_status, policy), elem_id="corpus-status")
 
         if showcase is not None:
             gr.Markdown(
-                "### Climate Science & Energy Transition Showcase\n"
-                "Explore **IPCC AR6**: physical science (2021), mitigation (2022), and synthesis (2023). "
-                "Answers cite these assessments, not live weather or current policy updates. "
-                "Visual references highlight retrieved text on the original PDF page. "
-                "Public uploads are unavailable.")
+                "**Collection:** three IPCC AR6 reports (2021–2023). "
+                "Answers use dated assessments, not live forecasts. "
+                "Open **Explore reports** for coverage and original PDFs.")
 
         # ── Main layout ────────────────────────────────────────────────
         with gr.Tabs():
             # ── TAB 1: Chat ────────────────────────────────────────────────
-            with gr.Tab("Chat"):
-                with gr.Row():
-                    # ── LEFT SIDEBAR (Settings & Use Cases) ─────────────────────
-                    with gr.Column(scale=1, elem_classes="sidebar"):
-                        gr.Markdown("### Advanced Settings")
-                        with gr.Column(elem_classes="settings-col"):
-                            search_type_toggle = gr.Radio(
-                                choices=[
-                                    "Standard Vector Search",
-                                    "Agentic Hybrid Search (RRF)",
-                                    "Elite Hybrid Search (RRF + Reranker)"
-                                ],
-                                value="Elite Hybrid Search (RRF + Reranker)",
-                                label="Retrieval Engine",
-                                interactive=True,
-                            )
-                            decomp_toggle = gr.Checkbox(
-                                label="Enable Query Decomposition",
-                                value=False,
-                            )
-                            guardrail_toggle = gr.Checkbox(
-                                label="Enable Live Guardrail",
-                                value=False,
-                            )
-                            
-                        gr.Markdown("### Highlighted Use Cases")
-                        with gr.Column(elem_classes="use-case-card"):
-                            gr.Markdown("**Query Decomposition**\n*How to test:* Enable **Query Decomposition** above. Watch the agent split the question.")
-                            btn_case1 = gr.Button("Compare: climate risks and mitigation pathways" if showcase else "Try: What value was used for label smoothing...", size="sm", variant="secondary")
-                        with gr.Column(elem_classes="use-case-card"):
-                            gr.Markdown("**Quantitative & Visual Grounding**\n*How to test:* Use **Elite Hybrid Search** and compare cited numbers with the highlighted PDF page.")
-                            btn_case2 = gr.Button("Find: solar, wind and battery cost reductions" if showcase else "Try: What are the dimension values for $d_k$ and $d_v$?", size="sm", variant="secondary")
-                        with gr.Column(elem_classes="use-case-card"):
-                            gr.Markdown("**Evidence Boundaries & Live Guardrail**\n*How to test:* Enable **Live Guardrail**. Ask for evidence these reports do not provide; the assistant should acknowledge the gap.")
-                            btn_case3 = gr.Button("Test: unsupported city-level prediction" if showcase else "Try: What is the capital of France?", size="sm", variant="secondary")
-        
-                        with gr.Accordion("Agent Memory", open=False):
-                            memory_display = gr.Markdown(runtime_memory_status(memory, policy))
-        
-                    # ── RIGHT CONTENT (Chat area) ────────────────────────────────
-                    with gr.Column(scale=3):
-                        with gr.Row():
-                            with gr.Column(scale=3, elem_classes="chat-col"):
-                                chatbot = gr.Chatbot(
-                                    label="Conversation",
-                                    height=520,
-                                    render_markdown=True,
-                                    avatar_images=(
-                                        None,
-                                        "https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ff6292a690345.svg"),
-                                )
-        
-                                with gr.Row():
-                                    user_input = gr.Textbox(
-                                        placeholder=("Ask about climate risks, emissions pathways, or energy transition..." if showcase else "Ask about the approved documents..."),
-                                        show_label=False,
-                                        lines=2,
-                                        scale=5,
-                                    )
-                                    send_btn = gr.Button("Send →", variant="primary", scale=1, elem_id="send-btn")
-        
-                                with gr.Row():
-                                    clear_btn = gr.Button(" Clear Chat", size="sm")
-                                    save_btn = gr.Button(" Save Memory", size="sm", variant="secondary",
-                                                         visible=not policy.is_public or private_sessions is not None)
-                                    save_status = gr.Textbox(show_label=False, interactive=False, placeholder="", scale=2, lines=1)
-        
-                            with gr.Column(scale=2, elem_classes="image-col"):
-                                gr.Markdown("### Visual Grounding\n*Highlighted PDF regions from last answer*")
-                                image_gallery = gr.HTML(
-                                    value="<div style='text-align:center; color:#888; padding:20px;'>Ask a question to see source documents here.</div>",
-                                    elem_id="visual-grounding-html"
-                                )
+            with gr.Tab("Research"):
+                preset_buttons = []
+                with gr.Column(elem_id="research-welcome") as welcome:
+                    gr.Markdown("### Start with a research question\nChoose a task below, or ask your own question. Then open the source pages to check the evidence.")
+                    with gr.Row(elem_id="starter-tasks"):
+                        for preset in demo_presets(showcase)[:3]:
+                            key, label, description, _, _, _ = preset
+                            with gr.Column(min_width=220, elem_classes="use-case-card"):
+                                gr.Markdown(description)
+                                preset_buttons.append(gr.Button(label, elem_id=f"preset-{key}",
+                                                                interactive=initial_status[0] == "ready"))
+
+                with gr.Row(elem_id="research-workspace"):
+                    with gr.Column(scale=3, min_width=300, elem_id="conversation-col"):
+                        chatbot = gr.Chatbot(label="Research conversation", height=380, visible=False,
+                                             render_markdown=True, elem_id="research-chat")
+                        with gr.Row(elem_id="question-composer"):
+                            user_input = gr.Textbox(
+                                label="Your research question", show_label=True,
+                                placeholder=("Ask about climate risks, emissions pathways, or energy transition..." if showcase else "Ask about the available documents..."),
+                                lines=2, scale=5, elem_id="research-question",
+                                interactive=initial_status[0] == "ready")
+                            send_btn = gr.Button("Ask question", variant="primary", scale=1,
+                                                 elem_id="send-btn", interactive=initial_status[0] == "ready")
+                        clear_btn = gr.Button("Start a new conversation", size="sm", elem_id="clear-chat")
+
+                    with gr.Column(scale=1, min_width=260, elem_id="evidence-col"):
+                        gr.Markdown("### Inspect the evidence\nAfter an answer, open its source pages and compare the highlighted passages with the response.")
+                        with gr.Accordion("View source pages", open=False, elem_id="source-pages"):
+                            image_gallery = gr.HTML(
+                                value="<p>Source pages appear here after a cited answer.</p>",
+                                elem_id="visual-grounding-html")
+
+                with gr.Accordion("Test the system's limits", open=False, elem_id="evidence-limits"):
+                    gr.Markdown("Missing evidence is a useful result. Try a question these reports cannot establish; the assistant should explain the gap. This example requests an automated grounding check, which can be unavailable.")
+                    btn_limits = gr.Button("Test an evidence gap", elem_id="preset-limits",
+                                           interactive=initial_status[0] == "ready")
+
+                with gr.Accordion("Advanced research options", open=False, elem_id="advanced-options"):
+                    gr.Markdown("The default combines meaning-based search, keyword matching, and reranking. You can ask questions without changing these options.")
+                    search_type_toggle = gr.Radio(
+                        choices=["Standard Vector Search", "Agentic Hybrid Search (RRF)", DEFAULT_SEARCH_LABEL],
+                        value=DEFAULT_SEARCH_LABEL, label="Retrieval method",
+                        info="Vector: meaning-based matching. Hybrid: adds keywords. Reranker: reorders candidate passages; its first use can load a model.")
+                    decomp_toggle = gr.Checkbox(label="Split complex questions into focused searches", value=False,
+                                                info="Query decomposition adds an LLM call and can lead to more searches. Useful for comparisons.")
+                    guardrail_toggle = gr.Checkbox(label="Request an automated grounding check", value=False,
+                                                   info="Adds an LLM call to compare the answer with retrieved text. It is not a guarantee of correctness.")
+
+                with gr.Accordion("Optional research memory", open=False, elem_id="research-memory"):
+                    if private_sessions is not None:
+                        gr.Markdown(
+                            "**Want to remember your research interests?** Public research needs no account. "
+                            "To save memory: start a private demo session, complete a conversation, then save. "
+                            "A verification challenge protects session creation. This temporary session "
+                            "expires within one hour and cannot be recovered on another device. "
+                            "Use the direct app URL rather than an embedded iframe.")
+                        start_session_btn = gr.Button("Remember my research interests", elem_id="start-private-session")
+                        session_status = gr.Markdown("Public guest mode · start a private session before saving research memory.",
+                                                     elem_id="private-session-status")
+                        forget_session_btn = gr.Button("Forget saved memory and end session", elem_id="forget-private-session")
+                        end_session_btn = gr.Button("Return to public research (keep saved memory)", elem_id="end-private-session")
+                    elif policy.is_public:
+                        gr.Markdown("Research memory is not configured on this deployment. You can still ask follow-up questions in this browser conversation.")
+                    memory_display = gr.Markdown(runtime_memory_status(memory, policy))
+                    save_btn = gr.Button("Save research memory", size="sm", variant="secondary",
+                                         visible=not policy.is_public or private_sessions is not None,
+                                         interactive=False, elem_id="save-research-memory")
+                    save_status = gr.Textbox(label="Memory save status", interactive=False, lines=1)
+
+            with gr.Tab("Explore reports"):
+                gr.Markdown("### Your research collection\nThese are dated assessments, not live weather or current-policy updates.")
+                refresh_reports_btn = gr.Button("Recheck report availability", size="sm", elem_id="refresh-reports")
+                report_card_components = []
+                with gr.Row(elem_id="report-cards"):
+                    for card in report_cards(collection, policy, showcase):
+                        with gr.Column(min_width=240):
+                            report_card_components.append(gr.HTML(card))
+                if showcase is None:
+                    gr.Markdown("This deployment uses its administrator-approved document collection. The curated IPCC report browser is available when the science showcase is enabled.")
 
             # ── TAB 2: Manage Knowledge Base ─────────────────────────────────
             with gr.Tab("📄 Manage Knowledge Base", visible=not policy.is_public):
@@ -533,7 +630,7 @@ def build_ui(gemini_client, memory, memory_file,
                 )
 
             # ── TAB 3: Architecture & Evaluation ─────────────────────────────
-            with gr.Tab("🏗️ Architecture & Evaluation"):
+            with gr.Tab("How this works"):
                 gr.Markdown("## System Architecture")
                 gr.Markdown(
                     "This system implements an advanced, production-grade Retrieval-Augmented Generation (RAG) architecture.\n\n"
@@ -554,20 +651,11 @@ def build_ui(gemini_client, memory, memory_file,
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        def set_case_1():
-            if showcase:
-                return ("Compare the physical-science and mitigation reports: how do risks differ between 1.5°C and 2°C warming, and what emissions pathways limit warming to 1.5°C? Cite each report and retain its uncertainty qualifiers.", True, False, True, False)
-            return "What specific value was used for label smoothing during training, and what were its effects on the model's metrics?", True, False, True, False
-            
-        def set_case_2():
-            if showcase:
-                return ("According to the mitigation report, how much did solar energy, wind energy, and lithium-ion battery unit costs fall from 2010 to 2019? Cite the exact PDF page and visual evidence.", False, False, False, False)
-            return "What are the specific dimension values used for $d_k$ and $d_v$ in each of the parallel attention layers?", False, False, False, False
-
-        def set_case_3():
-            if showcase:
-                return ("Using only these IPCC reports, tell me the exact temperature in Hyderabad on 1 January 2035. If this cannot be established from the reports, explain why without inventing a prediction.", False, True, False, True)
-            return "What is the capital of France?", False, True, False, True
+        def view_updates(result):
+            return (gr.update(value=result[0], visible=bool(result[0])), *result[1:],
+                    gr.update(visible=not bool(result[0])),
+                    corpus_status_message(corpus_status(collection, policy), policy),
+                    gr.update(interactive=bool(result[1]) and (not policy.is_public or result[4] is not None)))
 
         def submit(message, history, conv_history,
                    search_type, use_decomp, use_guardrail, owner_id, scope,
@@ -579,15 +667,16 @@ def build_ui(gemini_client, memory, memory_file,
             if scope["generation"] != generation:
                 # A cleared/ended/switched session must not be repopulated by
                 # an old LLM response arriving after the lifecycle callback.
-                return tuple(gr.skip() for _ in result)
-            return result
+                return tuple(gr.skip() for _ in range(8))
+            return view_updates(result)
 
         if private_sessions is not None:
             def refresh_private_session(history, conv_history, previous_owner, scope, request: gr.Request):
                 scope["generation"] = generation = uuid4().hex
                 try:
                     snapshot = private_sessions.load_for_request(request)
-                    status = "Private demo session active" if snapshot else "Public guest mode"
+                    status = ("Private demo session active · complete a conversation, then save research memory."
+                              if snapshot else "Public guest mode · start a private session before saving research memory.")
                     memory_status = format_private_memory_status(snapshot.memory) if snapshot else runtime_memory_status({}, policy)
                     owner = snapshot.user_id if snapshot else None
                     # Preserve public chat when the visitor explicitly opts in,
@@ -598,12 +687,16 @@ def build_ui(gemini_client, memory, memory_file,
                     status, memory_status, owner = str(error), runtime_memory_status({}, policy), None
                     keep_chat = False
                 if scope["generation"] != generation:
-                    return tuple(gr.skip() for _ in range(6))
-                return (status, memory_status, history if keep_chat else [],
-                        conv_history if keep_chat else [], "", owner)
+                    return tuple(gr.skip() for _ in range(9))
+                return (status, memory_status,
+                        gr.update(value=history if keep_chat else [], visible=bool(keep_chat and history)),
+                        conv_history if keep_chat else [], "", owner,
+                        gr.update(visible=not (keep_chat and history)),
+                        corpus_status_message(corpus_status(collection, policy), policy),
+                        gr.update(interactive=bool(keep_chat and conv_history and owner)))
 
             session_outputs = [session_status, memory_display, chatbot, conv_state,
-                               image_gallery, owner_state]
+                               image_gallery, owner_state, welcome, readiness_display, save_btn]
             session_inputs = [chatbot, conv_state, owner_state, scope_state]
             demo.load(fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
             start_session_btn.click(fn=None, js=private_sessions.start_js()).success(
@@ -618,46 +711,39 @@ def build_ui(gemini_client, memory, memory_file,
         def dummy_gpu_fn():
             return None
 
-        demo.load(fn=dummy_gpu_fn, inputs=None, outputs=None)
+        demo.load(fn=dummy_gpu_fn, inputs=None, outputs=None, show_progress="hidden", queue=False)
 
-        # Wire Case 1
-        btn_case1.click(
-            fn=set_case_1,
-            outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
-        ).then(
-            fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state, owner_state, scope_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
-        ).then(
-            fn=lambda: gr.update(value=""),
-            outputs=user_input,
+        chat_inputs = [user_input, chatbot, conv_state, search_state, decomp_state,
+                       guardrail_state, owner_state, scope_state]
+        chat_outputs = [chatbot, conv_state, image_gallery, memory_display, owner_state,
+                        welcome, readiness_display, save_btn]
+
+        def refresh_availability():
+            status = corpus_status(collection, policy)
+            available = status[0] == "ready"
+            return (corpus_status_message(status, policy),
+                    *(gr.update(interactive=available) for _ in range(6)),
+                    *report_cards(collection, policy, showcase))
+
+        refresh_reports_btn.click(
+            fn=refresh_availability,
+            outputs=[readiness_display, user_input, send_btn, *preset_buttons, btn_limits,
+                     *report_card_components],
         )
 
-        # Wire Case 2
-        btn_case2.click(
-            fn=set_case_2,
-            outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
-        ).then(
-            fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state, owner_state, scope_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
-        ).then(
-            fn=lambda: gr.update(value=""),
-            outputs=user_input,
-        )
+        def choose_preset(preset):
+            def choose():
+                _, _, _, prompt, decomp, check = preset
+                return prompt, DEFAULT_SEARCH_LABEL, decomp, check, DEFAULT_SEARCH_LABEL, decomp, check
+            return choose
 
-        # Wire Case 3
-        btn_case3.click(
-            fn=set_case_3,
-            outputs=[user_input, decomp_toggle, guardrail_toggle, decomp_state, guardrail_state],
-        ).then(
-            fn=submit,
-            inputs=[user_input, chatbot, conv_state, search_state, decomp_state, guardrail_state, owner_state, scope_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
-        ).then(
-            fn=lambda: gr.update(value=""),
-            outputs=user_input,
-        )
+        for button, preset in zip([*preset_buttons, btn_limits], demo_presets(showcase)):
+            button.click(
+                fn=choose_preset(preset), api_name="example_" + preset[0],
+                outputs=[user_input, search_type_toggle, decomp_toggle, guardrail_toggle,
+                         search_state, decomp_state, guardrail_state],
+            ).then(fn=submit, inputs=chat_inputs, outputs=chat_outputs).then(
+                fn=lambda: gr.update(value=""), outputs=user_input)
 
         # Sync toggle → search state
         search_type_toggle.change(
@@ -690,7 +776,7 @@ def build_ui(gemini_client, memory, memory_file,
                 search_state,
                 decomp_state,
                 guardrail_state, owner_state, scope_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
+            outputs=chat_outputs,
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,
@@ -706,7 +792,7 @@ def build_ui(gemini_client, memory, memory_file,
                 search_state,
                 decomp_state,
                 guardrail_state, owner_state, scope_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
+            outputs=chat_outputs,
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,
@@ -717,12 +803,12 @@ def build_ui(gemini_client, memory, memory_file,
             scope["generation"] = generation = uuid4().hex
             result = chat_fn("", [], [], DEFAULT_SEARCH_LABEL, False, False,
                              owner_id=owner_id, request=request)
-            return result if scope["generation"] == generation else tuple(gr.skip() for _ in result)
+            return view_updates(result) if scope["generation"] == generation else tuple(gr.skip() for _ in range(8))
 
         clear_btn.click(
             fn=clear_chat,
             inputs=[owner_state, scope_state],
-            outputs=[chatbot, conv_state, image_gallery, memory_display, owner_state],
+            outputs=chat_outputs,
         )
 
         # Save memory button
@@ -823,19 +909,8 @@ def main():
             "document_chunks", "input", "output",
         )] if policy.is_public else None,
         ssr_mode=False,
-        theme=gr.themes.Monochrome(primary_hue="slate", neutral_hue="slate"),
-        css="""
-            #header { text-align: center; padding: 20px 0; border-bottom: 1px solid #eaeaea; margin-bottom: 20px; }
-            #header h1 { font-size: 2.2em; margin-bottom: 4px; font-weight: 700; letter-spacing: -0.5px; }
-            #header p  { color: #64748b; margin: 0; font-size: 1.05em; }
-            .image-col { border-left: 1px solid #f1f5f9; padding-left: 20px; }
-            #send-btn  { min-width: 80px; font-weight: bold; }
-            .settings-row { background-color: #f8fafc; padding: 10px 15px; border-radius: 6px; border: 1px solid #e2e8f0; margin-top: 5px; }
-            .use-case-row { margin-bottom: 20px; }
-            .use-case-card { background-color: #ffffff; padding: 15px; border-radius: 8px; border: 1px solid #e2e8f0; text-align: center; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1); }
-            .use-case-card p { margin-bottom: 10px; font-size: 0.9em; color: #475569; }
-            .sidebar { background-color: #f8fafc; padding: 20px; border-right: 1px solid #e2e8f0; }
-        """,
+        theme=gr.themes.Monochrome(primary_hue="slate", neutral_hue="slate", font=["system-ui", "sans-serif"]),
+        css=DEMO_CSS,
     )
 
 

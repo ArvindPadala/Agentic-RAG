@@ -49,6 +49,13 @@ the printed page labels.
 
 ## Interview/demo scenarios
 
+The **Research** tab now starts with supported tasks and no sign-up requirement.
+**Explore reports** shows the report dates, coverage and original PDFs.
+Source pages, advanced settings, the evidence-gap test, and optional research
+memory are expandable. If reports are unavailable, research controls are paused;
+use **Explore reports → Recheck report availability** to retry without generating
+an answer. The backend enforces the same authorized-corpus check for direct calls.
+
 1. **Cross-report synthesis — Query Decomposition**
    Compare climate risks at 1.5°C and 2°C with emissions pathways limiting warming
    to 1.5°C. Require separate citations and preserved uncertainty language.

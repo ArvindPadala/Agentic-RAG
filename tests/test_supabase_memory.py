@@ -17,6 +17,7 @@ from starlette.requests import Request
 
 from app import build_ui, make_chat_fn, make_save_fn
 from config import Config
+from tests.test_runtime_privacy import ready_collection
 from private_sessions import COOKIE_NAME, PrivateSessions
 from supabase_backend import (
     AuthenticationError, MemoryConflict, MemorySnapshot, SupabaseBackend,
@@ -190,7 +191,7 @@ def test_cookie_tampering_expiry_and_cross_origin_fail_before_backend_access():
 def test_ordinary_public_chat_does_not_create_auth_users_or_read_memory():
     backend = MagicMock()
     service = sessions(backend)
-    chat = make_chat_fn(None, {}, "never-read.json", None, MagicMock(), None,
+    chat = make_chat_fn(None, {}, "never-read.json", None, ready_collection(), None,
                         private_sessions=service)
     with patch("app.run_agent_turn", return_value="Public answer"):
         result = chat("question", [], [], "Standard Vector Search", False, False)
@@ -202,7 +203,7 @@ def test_two_guest_memories_are_isolated_and_identity_switch_clears_history():
     backend = MagicMock()
     backend.load_memory.side_effect = [snapshot(), snapshot(B, "B-private-sentinel", "token-B")]
     service = sessions(backend)
-    chat = make_chat_fn(None, {}, "never-read.json", None, MagicMock(), None,
+    chat = make_chat_fn(None, {}, "never-read.json", None, ready_collection(), None,
                         private_sessions=service)
     received = []
 
@@ -228,7 +229,7 @@ def test_two_guest_memories_are_isolated_and_identity_switch_clears_history():
 
 def test_expired_private_identity_cannot_use_old_prompt_or_history():
     service = sessions(MagicMock())
-    chat = make_chat_fn(None, {}, "never-read.json", None, MagicMock(), None,
+    chat = make_chat_fn(None, {}, "never-read.json", None, ready_collection(), None,
                         private_sessions=service)
     with patch("app.run_agent_turn") as llm:
         result = chat("question", [{"role": "assistant", "content": "private"}], ["private"],
@@ -277,7 +278,7 @@ def test_real_gradio_routes_encrypt_cookie_and_protect_start_and_forget():
     backend = MagicMock()
     backend.start_guest.return_value = ("raw-access-token-sentinel", int(time.time() + 3600))
     service = sessions(backend)
-    demo = build_ui(None, {}, "never-read.json", None, MagicMock(), None,
+    demo = build_ui(None, {}, "never-read.json", None, ready_collection(), None,
                     private_sessions=service)
     app = gr.routes.App.create_app(demo, app_kwargs={"routes": service.routes()})
     try:
@@ -376,7 +377,7 @@ def test_actual_gradio_save_callback_gets_cookie_from_request_not_ui_inputs():
     backend.start_guest.return_value = ("token-A", int(time.time() + 3600))
     backend.load_memory.return_value = snapshot()
     service = sessions(backend)
-    demo = build_ui(None, {}, "never-read.json", None, MagicMock(), None,
+    demo = build_ui(None, {}, "never-read.json", None, ready_collection(), None,
                     private_sessions=service)
     app = gr.routes.App.create_app(demo, app_kwargs={"routes": service.routes()})
     try:
@@ -414,7 +415,7 @@ def test_late_private_response_is_discarded_after_return_to_public_mode():
     backend.start_guest.return_value = ("token-A", int(time.time() + 3600))
     backend.load_memory.return_value = snapshot()
     service = sessions(backend)
-    demo = build_ui(None, {}, "never-read.json", None, MagicMock(), None,
+    demo = build_ui(None, {}, "never-read.json", None, ready_collection(), None,
                     private_sessions=service)
     app = gr.routes.App.create_app(demo, app_kwargs={"routes": service.routes()})
     entered, release = threading.Event(), threading.Event()
@@ -485,7 +486,7 @@ def test_late_memory_refresh_cannot_restore_private_panel_after_ending_session()
 
     backend.load_memory.side_effect = delayed_load
     service = sessions(backend)
-    demo = build_ui(None, {}, "never-read.json", None, MagicMock(), None,
+    demo = build_ui(None, {}, "never-read.json", None, ready_collection(), None,
                     private_sessions=service)
     app = gr.routes.App.create_app(demo, app_kwargs={"routes": service.routes()})
     try:
@@ -572,7 +573,7 @@ def test_gradio_save_updates_status_and_memory_panel_without_reload():
     backend.load_memory.return_value = snapshot()
     backend.save_memory.return_value = MemorySnapshot(A, 2, confirmed_memory(), "token-A")
     service = sessions(backend)
-    demo = build_ui(None, {}, "never-read.json", None, MagicMock(), None, private_sessions=service)
+    demo = build_ui(None, {}, "never-read.json", None, ready_collection(), None, private_sessions=service)
     app = gr.routes.App.create_app(demo, app_kwargs={"routes": service.routes()})
 
     def turn(**kwargs):
@@ -589,11 +590,13 @@ def test_gradio_save_updates_status_and_memory_panel_without_reload():
             initialized = client.post("/gradio_api/api/refresh_private_session", headers=headers,
                                       json={"data": [[], None, None, None], "session_hash": "save-panel-test"})
             assert initialized.status_code == 200
+            assert initialized.json()["data"][-1]["interactive"] is False
             submitted = client.post("/gradio_api/api/submit", headers=headers, json={
                 "data": ["synthetic question", [], None, None, None, None, None, None],
                 "session_hash": "save-panel-test",
             })
             assert submitted.status_code == 200
+            assert submitted.json()["data"][-1]["interactive"] is True
             saved = client.post("/gradio_api/api/save", headers=headers,
                                 json={"data": [None, None, None], "session_hash": "save-panel-test"})
             assert saved.status_code == 200
@@ -601,5 +604,9 @@ def test_gradio_save_updates_status_and_memory_panel_without_reload():
             assert "saved" in status
             assert "Sessions remembered:** 1" in panel
             assert "confirmed-summary-sentinel" in panel
+            cleared = client.post("/gradio_api/api/clear_chat", headers=headers, json={
+                "data": [None, None], "session_hash": "save-panel-test"})
+            assert cleared.status_code == 200
+            assert cleared.json()["data"][-1]["interactive"] is False
     finally:
         demo.close()

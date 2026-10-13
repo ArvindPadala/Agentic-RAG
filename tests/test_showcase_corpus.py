@@ -17,7 +17,7 @@ from agent import build_search_tool
 from app import build_ui, clean_response, extract_image_urls, make_chat_fn
 from gemini_helpers import embed_and_index_chunks
 from showcase_corpus import ShowcaseCorpus, download_pdf, extract_chunks, prepare_showcase
-from tests.test_runtime_privacy import FixtureEmbeddings
+from tests.test_runtime_privacy import FixtureEmbeddings, ready_collection
 
 
 @pytest.fixture
@@ -58,15 +58,15 @@ def test_real_pdf_coordinates_and_file_serving_boundary(tmp_path, document):
     assert corpus.render_citation({**chunks[0], "page": 99}) is None
     assert extract_image_urls(f"[Evidence]({url})") == [url]
     assert url not in clean_response(f"[Evidence]({url})")
-    demo = build_ui(None, {}, "unused.json", None, MagicMock(), None, showcase=corpus)
+    demo = build_ui(None, {}, "unused.json", None, ready_collection(), None, showcase=corpus)
     app = gr.mount_gradio_app(FastAPI(), demo, path="", allowed_paths=[str(corpus.images)])
     with TestClient(app) as client:
         assert client.get(url).status_code == 200
         assert client.get("/gradio_api/file=" + str(path)).status_code == 403
         config = client.get("/config").json()
-        assert any("Climate Science" in str(component.get("props", {}).get("value", ""))
+        assert any("IPCC AR6" in str(component.get("props", {}).get("value", ""))
                    for component in config["components"])
-    chat = make_chat_fn(None, {}, "unused.json", None, MagicMock(), None, showcase=corpus)
+    chat = make_chat_fn(None, {}, "unused.json", None, ready_collection(), None, showcase=corpus)
     with patch("app.run_agent_turn", return_value=f"Public answer. [Evidence]({url})"):
         result = chat("question", [], [], "Standard Vector Search", False, False)
     assert url in result[2]

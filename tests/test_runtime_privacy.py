@@ -25,6 +25,13 @@ PUBLIC = RuntimePolicy()
 LOCAL = RuntimePolicy("local_private")
 
 
+def ready_collection():
+    """Explicit authorized availability for tests that mock generation."""
+    collection = MagicMock()
+    collection.get.return_value = {"ids": ["public-fixture"]}
+    return collection
+
+
 class FixtureEmbeddings:
     """Small deterministic vectors; no model downloads or external embedding API."""
 
@@ -148,7 +155,7 @@ def test_public_chat_does_not_inject_shared_memory_or_other_session_history():
         kwargs["conversation_history"].append(kwargs["user_message"])
         return "Public answer"
 
-    chat = make_chat_fn(None, legacy, "memory.json", None, MagicMock(), None, policy=PUBLIC)
+    chat = make_chat_fn(None, legacy, "memory.json", None, ready_collection(), None, policy=PUBLIC)
     with patch("app.run_agent_turn", side_effect=turn):
         result_a = chat("Session A question", [], session_a, "Standard Vector Search", False, False)
         result_b = chat("Session B question", [], session_b, "Standard Vector Search", False, False)
@@ -167,7 +174,7 @@ def test_failed_turn_keeps_original_session_state():
         kwargs["conversation_history"].extend(["user", "tool call", "tool response"])
         raise RuntimeError("private-provider-sentinel")
 
-    chat = make_chat_fn(None, {}, "unused.json", None, MagicMock(), None, policy=PUBLIC)
+    chat = make_chat_fn(None, {}, "unused.json", None, ready_collection(), None, policy=PUBLIC)
     with patch("app.run_agent_turn", side_effect=fail):
         result = chat("question", [], history, "Standard Vector Search", False, False)
     assert history == ["previous completed turn"]
