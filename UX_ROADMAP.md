@@ -77,7 +77,7 @@ Implementation order also considers dependencies and visitor impact.
 
 ## Phase 2 — Evidence-first answers
 
-- [ ] **10. Preserve structured retrieval/citation data outside model prose.** *(P1)*
+- [x] **10. Preserve structured retrieval/citation data outside model prose.** *(P1)*
   Retain authorized source IDs, report titles, excerpts, page positions, bounds,
   and image/PDF links as request-scoped data. Distinguish retrieved passages from
   citations actually referenced in an answer; validate citation references.
@@ -85,33 +85,33 @@ Implementation order also considers dependencies and visitor impact.
   fabricated source IDs cannot become valid citations, and session isolation is
   preserved. This is the foundation for items 11–14.
 
-- [ ] **11. Add compact, numbered citations to answers.** *(P3)*
+- [x] **11. Add compact, numbered citations to answers.** *(P3)*
   Map references such as [1] and [2] to the structured evidence records. Retain
   report dates and clarify PDF file-page positions versus printed page labels.
   **Done when:** each valid citation identifies its supporting passage and can
   open the corresponding evidence without exposing raw internal paths.
 
-- [ ] **12. Replace unlabeled images with evidence cards.** *(P3)*
+- [x] **12. Replace unlabeled images with evidence cards.** *(P3)*
   Show report title, year, PDF page, supporting excerpt, and original-PDF link.
   Use explicit “Retrieved evidence” versus “Cited in this answer” labels where
   appropriate. Do not treat an arbitrary retrieval score as factual confidence.
   **Done when:** visitors understand which report/page a passage comes from and
   why it is shown before expanding its image.
 
-- [ ] **13. Open the selected citation's highlighted PDF page on demand.** *(P3)*
+- [x] **13. Open the selected citation's highlighted PDF page on demand.** *(P3)*
   Link each evidence card/citation to its specific rendered page. Support a
   readable expanded preview alongside chat on desktop and below it on mobile.
   **Done when:** selecting a reference displays the correct report and page,
   and visitors can inspect the highlight and return to the answer easily.
 
-- [ ] **14. Keep evidence associated with its original answer.** *(P1)*
+- [x] **14. Keep evidence associated with its original answer.** *(P1)*
   Store evidence per completed turn instead of replacing all context with the
   latest answer's images. Clear or invalidate it with the conversation/session
   lifecycle; keep the state bounded.
   **Done when:** an earlier answer's citations still open its own evidence after
   follow-ups, and old private-session outputs cannot reappear in a new session.
 
-- [ ] **15. Make follow-up research easy.** *(P3)*
+- [x] **15. Make follow-up research easy.** *(P3)*
   Offer a clear follow-up input and useful continuation prompts tied to the
   supported research tasks. Prefer curated suggestions initially rather than
   adding an LLM request solely to generate UI suggestions.
@@ -237,4 +237,53 @@ their underlying retrieval architecture matches this application's.
 - `git diff --check` passed. Reviewed the application, source descriptors,
   adjusted existing tests, new regression/browser checks, and documentation.
 - Commit policy: one meaningful commit per completed, verified phase, including
-  this checklist. **Next: Phase 2, item 10 — structured evidence/citation data.**
+  this checklist.
+
+### Phase 2 — Evidence-first answers
+
+- **Items 10–15 implemented.** A synchronized per-turn collector captures only
+  authorized retrieval results and assigns numeric source IDs. Source titles,
+  excerpts, PDF page positions and original-PDF links are independent of model
+  prose. Unknown numeric references cannot become valid citation links; model
+  destinations on numeric references are replaced with registered-source actions.
+- The web tool sends numbered passages rather than crop URLs/internal object
+  keys. Images render only when a citation/card is selected. The CLI/default
+  search-tool contract and the loopback-only legacy S3 workflow remain supported.
+- Cards distinguish “Cited in this answer” from “Retrieved evidence · not cited.”
+  Neither label implies factual verification. Retained answers use native,
+  keyboard-operable disclosure groups. Selected previews include the source name,
+  PDF file-page position, and a full-size image link.
+- Evidence state retains at most 12 answers/120 passages, with at most 35 passages
+  per turn and 2,000 characters per excerpt. Citation IDs are not reused while a
+  conversation continues. Provider context is trimmed with evicted answer details;
+  follow-up actions preserve remaining context and the selected execution options.
+- Retained passages are reauthorized before display/selection. Source revocation
+  during generation withholds the new prose as well as references; revoked tool
+  results are removed before a subsequent follow-up reaches the provider. Ending,
+  switching or clearing a session invalidates pending answers/previews and clears
+  its evidence. Failed generation does not commit partial evidence/history.
+- Web image URLs use an opaque `/showcase/citations/<hash>.png` route with current
+  chunk/source authorization on every fetch and `Cache-Control: no-store`. Gradio
+  file serving blocks the entire showcase-data directory. Internal file paths do
+  not appear in the web evidence UI or the structured model-tool context.
+- `PYTHONDONTWRITEBYTECODE=1 make test`: 96 passed, 39 dependency/fixture warnings.
+  New coverage includes parallel ID assignment/deduplication, omitted/invalid
+  citations, escaped content, missing geometry, retention/context limits, failed
+  turns, source revocation, two-session/identity isolation, opaque image access,
+  late private previews, historical selection, and follow-up settings/context.
+- Real Chrome check (`python -m tests.browser_demo_ux --artifacts <temporary-directory>`)
+  passed at 1360px desktop and 390px mobile-emulated widths. It exercises citation
+  links and source-card buttons, actual synthetic PNG loading through opaque
+  routes, earlier-answer selection after follow-ups, unchanged execution settings,
+  clear/welcome behavior, report links, keyboard controls, layout and contrast.
+  Browser inspection caught and fixed retained-card overlap and a JavaScript
+  compatibility issue with Gradio 6.9. Mobile activation uses the keyboard;
+  physical touchscreen devices and live provider/CAPTCHA flows are not verified.
+- `make lint` and `git diff --check` passed. Production verification:
+  `docker build -t agenticrag-ux-phase2-check:local .` passed (existing keyword-
+  casing warning); `docker run --rm --network none --entrypoint python
+  agenticrag-ux-phase2-check:local -m pip check` reported no broken requirements.
+  A network-disabled container with mock configuration also built the evidence UI
+  and validated citation formatting. No dependencies or SQL schema were changed;
+  database checks were not repeated. No cloud deployment or live inference ran.
+- **Next: Phase 3, item 16 — actual request progress and recovery actions.**

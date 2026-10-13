@@ -29,7 +29,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements-p
 
 # Copy only runtime source. Never bake local indexes, documents, memory,
 # notebooks, generated archives, or environment files into a public image.
-COPY app.py agent.py access_control.py config.py gemini_helpers.py \
+COPY app.py agent.py access_control.py config.py gemini_helpers.py evidence.py \
      supabase_backend.py private_sessions.py \
      showcase_corpus.py manage_public_corpus.py showcase_sources.json \
      hybrid_search.py llm_router.py live_guardrail.py query_optimizer.py \

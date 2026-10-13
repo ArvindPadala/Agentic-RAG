@@ -23,6 +23,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 from app import build_ui, DEMO_CSS
+from access_control import RuntimePolicy
 from showcase_corpus import ShowcaseCorpus, curated_sources
 from tests.test_runtime_privacy import ready_collection
 
@@ -89,23 +90,36 @@ def main():
             pdf.save(pdf_path)
         sources = curated_sources()
         corpus = ShowcaseCorpus(root, [(source, pdf_path, "fixture") for source in sources])
-        image = corpus.render_citation({"source_pdf_key": f"showcase/fixture/{sources[0]['id']}.pdf",
-                                        "bbox": [0.1, 0.1, 0.9, 0.2], "page": 0})
+        source_key = f"showcase/fixture/{sources[0]['id']}.pdf"
+        collection = ready_collection()
+        collection.get.return_value = {"ids": ["public-fixture"],
+                                       "metadatas": [{"source_pdf_key": source_key, "page": 0}]}
+        retrieved = {"chunk_id": "public-fixture", "source_document": sources[0]["title"],
+                     "source_pdf_key": source_key, "source_url": sources[0]["url"],
+                     "page": 0, "bbox": [0.1, 0.07, 0.9, 0.1],
+                     "text": "Synthetic climate evidence for browser verification only.",
+                     "score": 0.9, "chunk_type": "text"}
         turns = []
 
         def synthetic_turn(**kwargs):
             turns.append((kwargs["use_decomposition"], kwargs["use_guardrail"]))
+            context = kwargs["tool_map"]["search_knowledge_base"]("synthetic climate query")
+            number = re.search(r"Evidence \[(\d+)\]", context).group(1)
             kwargs["conversation_history"].append("synthetic completed turn")
-            return f"Synthetic answer for browser verification. [Source page]({image})"
+            # Deliberately omit all image URLs: structured evidence must survive.
+            return f"Synthetic answer for browser verification [{number}]. Invalid reference [999]."
 
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         try:
-            with patch("app.run_agent_turn", side_effect=synthetic_turn):
-                demo = build_ui(None, {}, "unused.json", None, ready_collection(), None, showcase=corpus)
+            with patch("app.run_agent_turn", side_effect=synthetic_turn), \
+                    patch("agent.search_chroma", return_value=[retrieved]), \
+                    patch("hybrid_search.search_chroma_hybrid", return_value=[retrieved]):
+                demo = build_ui(None, {}, "unused.json", None, collection, None, showcase=corpus)
                 demo.queue().launch(server_name="127.0.0.1", server_port=port,
-                                    prevent_thread_lock=True, allowed_paths=[str(corpus.images)],
+                                    prevent_thread_lock=True, blocked_paths=[str(root)],
+                                    app_kwargs={"routes": corpus.routes(collection, RuntimePolicy())},
                                     max_file_size=0, css=DEMO_CSS,
                                     theme=gr.themes.Monochrome(primary_hue="slate", neutral_hue="slate", font=["system-ui", "sans-serif"]))
                 options = webdriver.ChromeOptions()
@@ -130,10 +144,35 @@ def main():
                     wait.until(lambda driver: "Synthetic answer" in driver.find_element(By.ID, "research-chat").text)
                     assert turns[-1] == (False, False)
                     wait.until(EC.invisibility_of_element_located((By.ID, "research-welcome")))
-                    accordion = browser.find_element(By.CSS_SELECTOR, "#source-pages button")
-                    accordion.send_keys(Keys.ENTER)
+                    assert "Cited in this answer" in browser.find_element(By.ID, "evidence-cards").text
+                    assert "#citation-999" not in browser.page_source
+                    assert str(root) not in browser.find_element(By.ID, "research-chat").text
+                    citation = browser.find_element(By.CSS_SELECTOR, '#research-chat a[href="#citation-1"]')
+                    activate(browser, citation, mobile=label == "mobile")
                     wait.until(lambda driver: driver.find_element(By.CSS_SELECTOR, "#visual-grounding-html img").get_property("naturalWidth") > 0)
+                    wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#visual-grounding-html img")))
+                    wait.until(lambda driver: not any(e.is_displayed() for e in
+                        driver.find_elements(By.CSS_SELECTOR, "[data-testid='status-tracker']")))
+                    assert "/showcase/citations/" in browser.find_element(By.CSS_SELECTOR, "#visual-grounding-html img").get_attribute("src")
+                    browser.execute_script("arguments[0].scrollIntoView({block:'center', behavior:'instant'})", browser.find_element(By.ID, "visual-grounding-html"))
                     browser.save_screenshot(str(args.artifacts / (label + "-evidence.png")))
+                    activate(browser, browser.find_element(By.ID, "followup-explain"), mobile=label == "mobile")
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '#research-chat a[href="#citation-2"]')))
+                    wait.until(lambda driver: not any(e.is_displayed() for e in
+                        driver.find_elements(By.CSS_SELECTOR, "[data-testid='status-tracker']")))
+                    assert turns[-1] == (False, False)
+                    calls_before_inspection = len(turns)
+                    activate(browser, browser.find_element(By.CSS_SELECTOR, '#research-chat a[href="#citation-1"]'), mobile=label == "mobile")
+                    wait.until(lambda driver: "[1]" in driver.find_element(By.ID, "visual-grounding-html").text)
+                    wait.until(lambda driver: not any(e.is_displayed() for e in
+                        driver.find_elements(By.CSS_SELECTOR, "[data-testid='status-tracker']")))
+                    summaries = browser.find_elements(By.CSS_SELECTOR, "#evidence-cards summary")
+                    summaries[-1].send_keys(Keys.ENTER)
+                    wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "#citation-1 button[data-citation]")))
+                    browser.execute_script("arguments[0].scrollIntoView({block:'center', behavior:'instant'})", browser.find_element(By.CSS_SELECTOR, "#citation-1 button[data-citation]"))
+                    activate(browser, browser.find_element(By.CSS_SELECTOR, "#citation-1 button[data-citation]"), mobile=label == "mobile")
+                    wait.until(lambda driver: "[1]" in driver.find_element(By.ID, "visual-grounding-html").text)
+                    assert len(turns) == calls_before_inspection, "Source inspection must not run generation"
                     wait.until(EC.element_to_be_clickable((By.ID, "clear-chat"))).send_keys(Keys.ENTER)
                     wait.until(EC.visibility_of_element_located((By.ID, "research-welcome")))
                     activate(browser, browser.find_element(By.ID, "preset-compare"), mobile=label == "mobile")
@@ -150,7 +189,7 @@ def main():
                     for link in browser.find_elements(By.CSS_SELECTOR, ".report-card a"):
                         assert link.get_attribute("href").startswith("https://www.ipcc.ch/")
                     browser.save_screenshot(str(args.artifacts / (label + "-reports.png")))
-                    print(f"PASS {label}: presets/settings, welcome/clear, evidence image, keyboard accordions, report links and layout")
+                    print(f"PASS {label}: validated citations, opaque page images, retained earlier sources, contextual follow-ups, presets/clear, keyboard, reports and layout")
         except Exception:
             if browser is not None:
                 browser.save_screenshot(str(args.artifacts / "failure.png"))

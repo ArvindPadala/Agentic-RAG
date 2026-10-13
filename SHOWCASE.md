@@ -41,8 +41,9 @@ Indexing uses bounded batches, verifies the complete expected ID set, then
 publishes only those exact chunks before handing the collection to the UI.
 Interrupted initial indexing can be resumed by rerunning the command.
 
-Only the generated citation-image directory is allowed through Gradio file
-serving. Original PDFs remain linked at IPCC. Crops are full PDF pages with a red
+Web citation images use opaque same-origin URLs that recheck current chunk/source
+authorization on every fetch. Gradio file serving blocks the showcase-data
+directory. Original PDFs remain linked at IPCC. Crops are full PDF pages with a red
 box around the retrieved text block, preserving nearby chart/table context.
 Page citations use **one-based PDF file-page positions**, which can differ from
 the printed page labels.
@@ -55,6 +56,19 @@ Source pages, advanced settings, the evidence-gap test, and optional research
 memory are expandable. If reports are unavailable, research controls are paused;
 use **Explore reports → Recheck report availability** to retry without generating
 an answer. The backend enforces the same authorized-corpus check for direct calls.
+
+Answers now use clickable numbered references such as **[1]**. **Evidence by
+answer** retains source excerpts, report titles/dates and PDF page positions,
+including passages the model retrieved but did not cite. Select a reference or
+**View source page** to render its page; no model-generated image URL is needed.
+Citation existence is a provenance check, not a guarantee that a claim is true.
+
+Use **Explain the evidence** or **Compare with another report** to continue with
+the existing context and settings. Source details retain up to 12 answers and
+120 passages; the corresponding provider context is trimmed when older details
+are evicted. Source access changes can restart the research context. New answers
+are withheld if retrieved sources lose access during the request. Source details are
+session-local and are cleared on conversation/session changes.
 
 1. **Cross-report synthesis — Query Decomposition**
    Compare climate risks at 1.5°C and 2°C with emissions pathways limiting warming

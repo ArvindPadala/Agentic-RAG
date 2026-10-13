@@ -85,7 +85,7 @@ def load_chroma_collection(collection_name: str,
 # ── 4. Search Tool ──────────────────────────────────────────────────────
 def build_search_tool(collection, gemini_client, s3_client, bucket: str,
                       use_hybrid: bool = False, use_reranker: bool = False,
-                      policy=None, citation_renderer=None):
+                      policy=None, citation_renderer=None, evidence_collector=None):
     """
     Build the search_knowledge_base function that the Gemini agent will call.
 
@@ -140,6 +140,16 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
             if chunk_id in seen_chunk_ids:
                 continue
             seen_chunk_ids.add(chunk_id)
+
+            if evidence_collector is not None:
+                record = evidence_collector.add(result)
+                if record is not None:
+                    formatted_results.append(
+                        f"**Evidence [{record.number}]**\n**Source:** {record.title}\n"
+                        f"**PDF Page:** {record.page + 1}\n**Content:**\n{record.excerpt}")
+                # Structured web mode defers image work until selection. Paths,
+                # crop URLs and internal object IDs do not enter the model prompt.
+                continue
 
             # Visual grounding: crop the PDF region and get a presigned URL
             cropped_image_url = None
@@ -201,8 +211,11 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
         description=(
             "Search the document knowledge base for relevant information "
             "about the user's documents. "
-            "Returns text content with page numbers and visual references (image URLs) "
-            "showing the exact location in the source PDF."
+            + ("Returns numbered evidence passages with exact PDF page positions. "
+               "The interface supplies source-page previews separately."
+               if evidence_collector is not None else
+               "Returns text content with page numbers and visual references (image URLs) "
+               "showing the exact location in the source PDF.")
         ),
         parameters=genai_types.Schema(
             type=genai_types.Type.OBJECT,
@@ -222,22 +235,26 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
 
 # ── 5. Agent Config ─────────────────────────────────────────────────────
 def build_agent_config(
-        search_tool, memory: dict) -> genai_types.GenerateContentConfig:
+        search_tool, memory: dict, *, structured_citations=False) -> genai_types.GenerateContentConfig:
     """Build the GenerateContentConfig with system prompt and tools."""
     memory_context = format_memory_for_prompt(memory)
+    citation_instruction = (
+        "Cite factual claims using the exact numeric evidence IDs from the search tool, like [1] or [2]. "
+        "Use only IDs retrieved for this turn. Do not invent IDs, URLs, paths, or reuse an earlier turn's IDs. "
+        "The interface supplies source excerpts and page previews separately; do not generate image links."
+        if structured_citations else
+        "When search results include visual grounding, include the PDF page number and visual reference URL.")
 
     system_prompt = f"""You are an expert document analysis assistant.
 You have access to a repository of documents via the search_knowledge_base tool.
 
 Your capabilities:
 - Search and analyze documents from the knowledge base
-- Provide visual grounding: show EXACT page numbers and image URLs from source PDFs
+- Provide source-grounded responses with exact PDF page positions
 - Remember user preferences and conversation history
 - Provide evidence-based, cited responses
 
-IMPORTANT: When search results include visual grounding information, you MUST include:
-- The page number where information was found
-- The visual reference URL (so the user can see the highlighted text in context)
+IMPORTANT CITATION FORMAT: {citation_instruction}
 
 Always call search_knowledge_base before answering questions about the documents.
 Always cite your sources.

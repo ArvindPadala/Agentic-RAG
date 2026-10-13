@@ -45,6 +45,8 @@ from utils.logger import get_logger
 from upload_handler import make_upload_fn
 from supabase_backend import SupabaseBackend, SupabaseError
 from private_sessions import PrivateSessions
+from evidence import (EvidenceCollector, EvidenceHistory, EvidenceTurn, EVIDENCE_CLICK_JS,
+                      authorized_passages, format_citations, render_cards)
 
 logger = get_logger("app")
 
@@ -184,6 +186,13 @@ DEMO_CSS = """
     .report-card p { line-height: 1.6; }
     .report-card a { color: var(--link-text-color); text-decoration: underline; display: inline-block; padding: 10px 0; }
     #visual-grounding-html img { max-width: 100%; height: auto; }
+    .evidence-card { padding: 12px; margin: 12px 0; border: 1px solid var(--border-color-primary); border-radius: 10px; }
+    .evidence-card blockquote { margin: 8px 0; padding: 8px; border-left: 3px solid var(--border-color-primary); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .evidence-card button { display: block; min-height: 44px; margin-top: 8px; padding: 8px; border: 1px solid var(--border-color-primary); border-radius: 6px; }
+    .evidence-card a { text-decoration: underline; }
+    .answer-evidence summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+    #evidence-cards { overflow-wrap: anywhere; }
+    .evidence-scroll { display: block; max-height: 520px; overflow-y: auto; }
     #research-chat { overflow-wrap: anywhere; }
     button:focus-visible, a:focus-visible, textarea:focus-visible, input:focus-visible {
         outline: 3px solid #2563eb !important; outline-offset: 3px;
@@ -290,7 +299,7 @@ def is_overload_error(e: Exception) -> bool:
 
 def make_chat_fn(gemini_client, memory, memory_file,
                  s3_client, collection, bucket_name, policy=None, private_sessions=None,
-                 showcase=None):
+                 showcase=None, return_evidence=False):
     """
     Returns the Gradio chat handler.
 
@@ -301,9 +310,12 @@ def make_chat_fn(gemini_client, memory, memory_file,
     policy = policy or settings.ACCESS_POLICY
     memory = {} if policy.is_public else memory
 
+    def finish(base, turn=None):
+        return (*base, turn) if return_evidence else base
+
     def chat(user_message: str, history: list, conversation_history: list,
-             search_type: str, use_decomposition: bool, use_guardrail: bool,
-             owner_id=None, request=None):
+              search_type: str, use_decomposition: bool, use_guardrail: bool,
+              owner_id=None, request=None, first_citation=1):
         request_memory = memory
         current_owner = None
         snapshot = None
@@ -312,7 +324,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
                 snapshot = private_sessions.load_for_request(request)
             except SupabaseError as error:
                 # Expired/unverifiable identity cannot reuse private context.
-                return [], [], "", str(error), None
+                return finish(([], [], "", str(error), None))
             current_owner = snapshot.user_id if snapshot else None
             request_memory = snapshot.memory if snapshot else {}
         if owner_id != current_owner:
@@ -322,19 +334,20 @@ def make_chat_fn(gemini_client, memory, memory_file,
         memory_status = (format_private_memory_status(request_memory)
                          if snapshot else runtime_memory_status(request_memory, policy))
         if not user_message.strip():
-            return history, conversation_history, "", memory_status, current_owner
+            return finish((history, conversation_history, "", memory_status, current_owner))
 
         status = corpus_status(collection, policy)
         if status[0] != "ready":
-            return (history + [{"role": "user", "content": user_message},
+            return finish((history + [{"role": "user", "content": user_message},
                                {"role": "assistant", "content": corpus_status_message(status, policy)}],
-                    conversation_history, "", memory_status, current_owner)
+                    conversation_history, "", memory_status, current_owner))
 
         # 1. Determine Search Type
         use_hybrid = "Hybrid" in search_type
         use_reranker = "Reranker" in search_type
 
         # 2. Build the tool dynamically based on UI selection
+        evidence = EvidenceCollector(first_citation) if return_evidence else None
         search_fn, search_tool = build_search_tool(
             collection=collection,
             gemini_client=gemini_client,
@@ -344,12 +357,14 @@ def make_chat_fn(gemini_client, memory, memory_file,
             use_reranker=use_reranker,
             policy=policy,
             citation_renderer=showcase.render_citation if showcase else None,
+            evidence_collector=evidence,
         )
         tool_map = {"search_knowledge_base": search_fn}
 
         # 3. Create generation config with the specific tool and memory
         from agent import build_agent_config
-        generation_config = build_agent_config(search_tool, request_memory)
+        generation_config = build_agent_config(search_tool, request_memory,
+                                               structured_citations=return_evidence)
 
         # 4. Use the resilient auto-routing from GeminiRouter
         # GeminiRouter handles the actual fallback logic
@@ -393,9 +408,22 @@ def make_chat_fn(gemini_client, memory, memory_file,
                              if policy.is_public else f"❌ **Unexpected error:** {e}")
 
             history = history + [{"role": "assistant", "content": error_msg}]
-            return (history, conversation_history,
+            return finish((history, conversation_history,
                     "<div style='text-align:center; color:#888; padding:20px;'>Error occurred.</div>",
-                    memory_status, current_owner)
+                    memory_status, current_owner))
+
+        if return_evidence:
+            records = evidence.snapshot()
+            allowed = authorized_passages(records, collection, policy)
+            if len(allowed) != len(records):
+                history = history + [{"role": "assistant", "content":
+                    "The available sources changed during this request. Please retry using the currently authorized reports."}]
+                return finish((history, conversation_history, "", memory_status, current_owner))
+            display_response, cited = format_citations(clean_response(raw_response), allowed)
+            display_response += f"\n\n*(Processed in {elapsed_time:.2f}s)*"
+            turn = EvidenceTurn(user_message, records, cited, context_start=len(conversation_history))
+            history = history + [{"role": "assistant", "content": display_response}]
+            return finish((history, working_history, "", memory_status, current_owner), turn)
 
         conversation_history = working_history
 
@@ -486,7 +514,7 @@ def build_ui(gemini_client, memory, memory_file,
         s3_client,
         collection,
         bucket_name,
-        policy=policy, private_sessions=private_sessions, showcase=showcase)
+        policy=policy, private_sessions=private_sessions, showcase=showcase, return_evidence=True)
     save_fn = make_save_fn(gemini_client, memory, memory_file, policy=policy,
                            private_sessions=private_sessions, update_panel=True)
     upload_fn = make_upload_fn(s3_client, bucket_name, collection, policy=policy)
@@ -500,7 +528,7 @@ def build_ui(gemini_client, memory, memory_file,
         # This mutable server-side state is unique per Gradio browser session.
         # Lifecycle callbacks invalidate pending outputs without a global cache
         # or trusting client-provided ownership/generation identifiers.
-        scope_state = gr.State({"generation": None})
+        scope_state = gr.State({"generation": None, "evidence": EvidenceHistory()})
         # tracks selected retrieval engine
         search_state = gr.State(DEFAULT_SEARCH_LABEL)
         decomp_state = gr.State(False)
@@ -553,10 +581,15 @@ def build_ui(gemini_client, memory, memory_file,
                             send_btn = gr.Button("Ask question", variant="primary", scale=1,
                                                  elem_id="send-btn", interactive=initial_status[0] == "ready")
                         clear_btn = gr.Button("Start a new conversation", size="sm", elem_id="clear-chat")
+                        with gr.Row(visible=False, elem_id="follow-up-tasks") as followups:
+                            followup_explain = gr.Button("Explain the evidence", size="sm", elem_id="followup-explain")
+                            followup_compare = gr.Button("Compare with another report", size="sm", elem_id="followup-compare")
 
                     with gr.Column(scale=1, min_width=260, elem_id="evidence-col"):
-                        gr.Markdown("### Inspect the evidence\nAfter an answer, open its source pages and compare the highlighted passages with the response.")
-                        with gr.Accordion("View source pages", open=False, elem_id="source-pages"):
+                        gr.Markdown("### Evidence by answer\nSelect a numbered citation or a source card to inspect its passage and highlighted page.")
+                        evidence_cards = gr.HTML(render_cards([], ()), elem_id="evidence-cards",
+                                                  js_on_load=EVIDENCE_CLICK_JS)
+                        with gr.Accordion("View source pages", open=False, elem_id="source-pages") as source_pages:
                             image_gallery = gr.HTML(
                                 value="<p>Source pages appear here after a cited answer.</p>",
                                 elem_id="visual-grounding-html")
@@ -651,28 +684,69 @@ def build_ui(gemini_client, memory, memory_file,
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        def view_updates(result):
-            return (gr.update(value=result[0], visible=bool(result[0])), *result[1:],
+        def view_updates(result, evidence_history, allowed):
+            return (gr.update(value=result[0], visible=bool(result[0])), result[1],
+                    render_cards(evidence_history.turns, allowed), result[3], result[4],
                     gr.update(visible=not bool(result[0])),
                     corpus_status_message(corpus_status(collection, policy), policy),
+                    "<p>Select a numbered citation or source card to view its highlighted page.</p>",
+                    gr.update(open=False), gr.update(visible=bool(result[1])),
+                    gr.update(placeholder="Ask a follow-up about this answer…" if result[1]
+                              else "Ask a research question about the available reports…"),
                     gr.update(interactive=bool(result[1]) and (not policy.is_public or result[4] is not None)))
+
+        def commit_view(scope, generation, result, candidate):
+            if candidate.owner != result[4]:
+                candidate.clear(result[4])
+            tracked = candidate.records() + (result[5].records if result[5] is not None else ())
+            allowed = authorized_passages(tracked, collection, policy)
+            if len(allowed) != len(tracked):
+                # Withhold prose as well as links: the generated answer may
+                # still contain facts from a source revoked during the request.
+                question = next((m["content"] for m in reversed(result[0]) if m["role"] == "user"), "")
+                candidate.clear(result[4])
+                result = ([{"role": "user", "content": question}, {"role": "assistant", "content":
+                           "The available sources changed during this request. Please retry with the currently authorized reports."}],
+                          [], "", result[3], result[4], None)
+                allowed = ()
+            elif result[5] is not None:
+                candidate.append(result[5])
+                result = (result[0], candidate.trim_context(result[1]), *result[2:])
+            view = view_updates(result, candidate, allowed)
+            # Metadata checks can perform I/O. Check again after presentation
+            # work and commit under the same lock used by end/clear/refresh.
+            stored = scope["evidence"]
+            with stored.lock:
+                if scope["generation"] != generation:
+                    return tuple(gr.skip() for _ in chat_outputs)
+                stored.turns, stored.next_number = candidate.turns, candidate.next_number
+                stored.answer_count, stored.owner = candidate.answer_count, candidate.owner
+            return view
 
         def submit(message, history, conv_history,
                    search_type, use_decomp, use_guardrail, owner_id, scope,
                    request: gr.Request):
-            generation = scope["generation"]
+            stored = scope["evidence"]
+            with stored.lock:
+                scope["generation"] = generation = uuid4().hex
+                candidate = deepcopy(stored)
+            if len(authorized_passages(candidate.records(), collection, policy)) != len(candidate.records()):
+                # Historical tool results from revoked sources must not enter
+                # the provider's context on a follow-up.
+                candidate.clear(candidate.owner)
+                history, conv_history = [], []
             result = chat_fn(message, history, conv_history,
-                             search_type, use_decomp, use_guardrail,
-                             owner_id=owner_id, request=request)
-            if scope["generation"] != generation:
-                # A cleared/ended/switched session must not be repopulated by
-                # an old LLM response arriving after the lifecycle callback.
-                return tuple(gr.skip() for _ in range(8))
-            return view_updates(result)
+                              search_type, use_decomp, use_guardrail,
+                              owner_id=owner_id, request=request,
+                              first_citation=candidate.next_number)
+            return commit_view(scope, generation, result, candidate)
 
         if private_sessions is not None:
             def refresh_private_session(history, conv_history, previous_owner, scope, request: gr.Request):
-                scope["generation"] = generation = uuid4().hex
+                stored = scope["evidence"]
+                with stored.lock:
+                    scope["generation"] = generation = uuid4().hex
+                    candidate = deepcopy(stored)
                 try:
                     snapshot = private_sessions.load_for_request(request)
                     status = ("Private demo session active · complete a conversation, then save research memory."
@@ -686,17 +760,22 @@ def build_ui(gemini_client, memory, memory_file,
                 except SupabaseError as error:
                     status, memory_status, owner = str(error), runtime_memory_status({}, policy), None
                     keep_chat = False
+                if not keep_chat:
+                    candidate.clear(owner)
+                else:
+                    # Opting in may retain public chat/evidence; switching from
+                    # one private identity to another never retains old content.
+                    candidate.owner = owner
+                result = (history if keep_chat else [], conv_history if keep_chat else [],
+                          "", memory_status, owner, None)
+                view = commit_view(scope, generation, result, candidate)
                 if scope["generation"] != generation:
-                    return tuple(gr.skip() for _ in range(9))
-                return (status, memory_status,
-                        gr.update(value=history if keep_chat else [], visible=bool(keep_chat and history)),
-                        conv_history if keep_chat else [], "", owner,
-                        gr.update(visible=not (keep_chat and history)),
-                        corpus_status_message(corpus_status(collection, policy), policy),
-                        gr.update(interactive=bool(keep_chat and conv_history and owner)))
+                    return tuple(gr.skip() for _ in session_outputs)
+                return status, *view
 
-            session_outputs = [session_status, memory_display, chatbot, conv_state,
-                               image_gallery, owner_state, welcome, readiness_display, save_btn]
+            session_outputs = [session_status, chatbot, conv_state, evidence_cards, memory_display,
+                               owner_state, welcome, readiness_display, image_gallery, source_pages,
+                               followups, user_input, save_btn]
             session_inputs = [chatbot, conv_state, owner_state, scope_state]
             demo.load(fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
             start_session_btn.click(fn=None, js=private_sessions.start_js()).success(
@@ -715,8 +794,79 @@ def build_ui(gemini_client, memory, memory_file,
 
         chat_inputs = [user_input, chatbot, conv_state, search_state, decomp_state,
                        guardrail_state, owner_state, scope_state]
-        chat_outputs = [chatbot, conv_state, image_gallery, memory_display, owner_state,
-                        welcome, readiness_display, save_btn]
+        chat_outputs = [chatbot, conv_state, evidence_cards, memory_display, owner_state,
+                        welcome, readiness_display, image_gallery, source_pages,
+                        followups, user_input, save_btn]
+
+        def select_evidence(owner_id, scope, evt: gr.EventData, request: gr.Request):
+            stored = scope["evidence"]
+            with stored.lock:
+                generation = scope["generation"]
+                candidate = deepcopy(stored)
+            try:
+                snapshot = private_sessions.load_for_request(request) if private_sessions else None
+                current_owner = snapshot.user_id if snapshot else None
+            except SupabaseError:
+                current_owner = None
+                authorized_owner = False
+            else:
+                authorized_owner = current_owner == candidate.owner == owner_id
+            if not authorized_owner:
+                with stored.lock:
+                    if scope["generation"] != generation:
+                        return gr.skip(), gr.skip(), gr.skip()
+                    scope["generation"] = uuid4().hex
+                    stored.clear(current_owner)
+                return render_cards([], ()), "<p>Your session changed. Start a new conversation.</p>", gr.update(open=False)
+            allowed = authorized_passages(candidate.records(), collection, policy)
+            number = getattr(evt, "citation", None)
+            selected = next((p for p in allowed if isinstance(number, int)
+                             and not isinstance(number, bool) and p.number == number), None)
+            image = None
+            if selected is not None:
+                try:
+                    if showcase:
+                        image = showcase.render_citation(selected.rendering_input(), opaque_url=True)
+                    elif s3_client and bucket_name and (selected.source_key or not policy.is_public):
+                        from visual_grounding_helper import extract_chunk_image
+                        # Preserve the legacy loopback-only local workflow.
+                        # Public citations never infer a PDF key from a title.
+                        source_key = selected.source_key or f"input/documents/{selected.title}.pdf"
+                        image = extract_chunk_image(s3_client, bucket_name, source_key,
+                                                    list(selected.bbox), selected.page, selected.chunk_id, selected.title)
+                except Exception:
+                    logger.warning("Authorized source page could not be rendered")
+                # Rendering may be slow; revocation during it must not redisplay
+                # a retained excerpt or publish its preview in the response.
+                allowed = authorized_passages(candidate.records(), collection, policy)
+                if selected not in allowed:
+                    selected = None
+            if selected is None:
+                preview = "<p>This source is unavailable or is no longer retained for this conversation.</p>"
+            else:
+                preview = (f"<figure><figcaption role='status' aria-live='polite'><strong>[{selected.number}] {escape(selected.title)}</strong> · "
+                           f"PDF page {selected.page + 1} (file position)</figcaption>")
+                if image:
+                    preview += (f"<a href='{escape(image, quote=True)}' target='_blank' rel='noopener noreferrer'>Open full-size source image</a>"
+                                f"<img src='{escape(image, quote=True)}' alt='Source PDF page for reference {selected.number}' /></figure>")
+                else:
+                    preview += "<p>The page image is unavailable. The passage and any original-PDF link remain available.</p></figure>"
+            with stored.lock:
+                if scope["generation"] != generation:
+                    return gr.skip(), gr.skip(), gr.skip()
+            return render_cards(candidate.turns, allowed), preview, gr.update(open=True)
+
+        evidence_cards.click(select_evidence, inputs=[owner_state, scope_state],
+                             outputs=[evidence_cards, image_gallery, source_pages], show_progress="minimal",
+                             show_progress_on=[image_gallery]).then(
+            fn=None, js="""() => {
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                    const preview = document.querySelector('#visual-grounding-html figure');
+                    if (preview && matchMedia('(max-width:760px)').matches) {
+                        preview.scrollIntoView({block:'start', behavior:'smooth'});
+                    }
+                }));
+            }""")
 
         def refresh_availability():
             status = corpus_status(collection, policy)
@@ -743,6 +893,19 @@ def build_ui(gemini_client, memory, memory_file,
                 outputs=[user_input, search_type_toggle, decomp_toggle, guardrail_toggle,
                          search_state, decomp_state, guardrail_state],
             ).then(fn=submit, inputs=chat_inputs, outputs=chat_outputs).then(
+                fn=lambda: gr.update(value=""), outputs=user_input)
+
+        def followup_prompt(prompt):
+            def choose_followup():
+                return prompt
+            return choose_followup
+
+        for key, button, prompt in (
+            ("explain", followup_explain, "Explain the evidence behind your previous answer, including its uncertainty and scenario assumptions. Cite the supporting passages."),
+            ("compare", followup_compare, "Compare your previous answer with evidence from another available report. Cite the reports and explain any differences or missing evidence."),
+        ):
+            button.click(fn=followup_prompt(prompt), api_name="followup_" + key, outputs=user_input).then(
+                fn=submit, inputs=chat_inputs, outputs=chat_outputs).then(
                 fn=lambda: gr.update(value=""), outputs=user_input)
 
         # Sync toggle → search state
@@ -800,10 +963,14 @@ def build_ui(gemini_client, memory, memory_file,
 
         # Clear chat (keeps memory, resets conversation)
         def clear_chat(owner_id, scope, request: gr.Request):
-            scope["generation"] = generation = uuid4().hex
+            stored = scope["evidence"]
+            with stored.lock:
+                scope["generation"] = generation = uuid4().hex
+                stored.clear()
+                candidate = deepcopy(stored)
             result = chat_fn("", [], [], DEFAULT_SEARCH_LABEL, False, False,
                              owner_id=owner_id, request=request)
-            return view_updates(result) if scope["generation"] == generation else tuple(gr.skip() for _ in range(8))
+            return commit_view(scope, generation, result, candidate)
 
         clear_btn.click(
             fn=clear_chat,
@@ -893,21 +1060,23 @@ def main():
         showcase=showcase,
     )
     demo.queue(default_concurrency_limit=2)
+    routes = private_sessions.routes() if private_sessions else []
+    if showcase:
+        routes += showcase.routes(collection, policy)
     demo.launch(
         server_name="0.0.0.0" if policy.is_public else "127.0.0.1",
         server_port=args.port,
         share=args.share,
         show_error=not policy.is_public,
         strict_cors=True,
-        app_kwargs={"routes": private_sessions.routes()} if private_sessions else None,
+        app_kwargs={"routes": routes} if routes else None,
         # The framework upload route runs before our ingestion handler. Deny
         # file bodies there as well instead of merely hiding a File component.
         max_file_size=0 if policy.is_public else "20mb",
-        allowed_paths=[str(showcase.images)] if showcase else None,
         blocked_paths=[str(Path(path).resolve()) for path in (
             args.memory_file, args.chroma_path, ".env", "documents",
             "document_chunks", "input", "output",
-        )] if policy.is_public else None,
+        )] + ([str(showcase.root)] if showcase else []) if policy.is_public else None,
         ssr_mode=False,
         theme=gr.themes.Monochrome(primary_hue="slate", neutral_hue="slate", font=["system-ui", "sans-serif"]),
         css=DEMO_CSS,

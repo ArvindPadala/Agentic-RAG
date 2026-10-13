@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 import tempfile
 import time
+import re
+from threading import RLock
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
 
@@ -105,8 +107,10 @@ class ShowcaseCorpus:
                           for source, path, digest in documents}
         self.images = self.root / "citations"
         self.images.mkdir(parents=True, exist_ok=True)
+        self._citations = {}
+        self._citation_lock = RLock()
 
-    def render_citation(self, result):
+    def render_citation(self, result, *, opaque_url=False):
         """Only exact curated identities can render; no metadata path traversal."""
         document = self.documents.get(result.get("source_pdf_key"))
         if document is None:
@@ -116,7 +120,7 @@ class ShowcaseCorpus:
         if (len(bbox) != 4 or any(not math.isfinite(v) or not 0 <= v <= 1 for v in bbox)
                 or bbox[0] >= bbox[2] or bbox[1] >= bbox[3]):
             return None
-        identity = json.dumps([result["source_pdf_key"], result["page"], bbox, 120])
+        identity = json.dumps([result["source_pdf_key"], result.get("chunk_id", ""), result["page"], bbox, 120])
         target = self.images / (hashlib.sha256(identity.encode()).hexdigest() + ".png")
         if not target.exists():
             with fitz.open(path) as pdf:
@@ -129,7 +133,42 @@ class ShowcaseCorpus:
                 page.draw_rect(rect, color=(1, 0, 0), width=1)
                 # Full page preserves figures/table context around retrieved text.
                 atomic_write(target, page.get_pixmap(dpi=120).tobytes("png"))
+        if opaque_url:
+            with self._citation_lock:
+                self._citations[target.stem] = (result.get("chunk_id"), result["source_pdf_key"])
+            return "/showcase/citations/" + target.name
         return "/gradio_api/file=" + quote(str(target), safe="/")
+
+    def routes(self, collection, policy):
+        """Opaque public-image URLs with current authorization on every fetch."""
+        from fastapi import APIRouter, HTTPException
+        from fastapi.responses import FileResponse
+
+        router = APIRouter()
+
+        @router.get("/showcase/citations/{image_id}.png")
+        def citation_image(image_id: str):
+            if not re.fullmatch(r"[a-f0-9]{64}", image_id):
+                raise HTTPException(404, "Source page unavailable")
+            with self._citation_lock:
+                identity = self._citations.get(image_id)
+            if identity is None:
+                raise HTTPException(404, "Source page unavailable")
+            chunk_id, source_key = identity
+            try:
+                kwargs = {"where": {"source_pdf_key": source_key}, "include": [], "limit": 1}
+                if chunk_id:
+                    kwargs["ids"] = [chunk_id]
+                records = policy.scope_collection(collection).get(**kwargs)["ids"]
+                allowed = chunk_id in records if chunk_id else bool(records)
+            except Exception:
+                allowed = False
+            path = self.images / (image_id + ".png")
+            if not allowed or not path.is_file():
+                raise HTTPException(404, "Source page unavailable")
+            return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-store"})
+
+        return router.routes
 
 
 def prepare_showcase(root="./showcase_data"):
