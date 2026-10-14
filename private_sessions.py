@@ -154,7 +154,7 @@ class PrivateSessions:
     def start_js(self):
         # Only the public CAPTCHA site key is embedded. Auth JWTs live inside
         # encrypted HttpOnly cookies and are never returned to browser JS.
-        return """async () => {
+        return """async (...inputs) => {
             if (window.self !== window.top) {
                 throw new Error('Open the direct app URL in a new tab to start a private session.');
             }
@@ -189,11 +189,12 @@ class PrivateSessions:
                 if (widget !== undefined) window.turnstile.remove(widget);
                 target.remove();
             }
+            return inputs;
         }""".replace("SITE_KEY", json.dumps(self.site_key))
 
     @staticmethod
     def forget_js():
-        return """async () => {
+        return """async (...inputs) => {
             const result = await fetch('/private-session/forget', {
                 method: 'POST', credentials: 'same-origin',
                 headers: {'Content-Type': 'application/json'}, body: '{}'
@@ -203,14 +204,16 @@ class PrivateSessions:
             if (data.status === 'expired') {
                 window.alert('The local session was cleared, but expired private memory needs retention cleanup.');
             }
+            return inputs;
         }"""
 
     @staticmethod
     def end_js():
-        return """async () => {
+        return """async (...inputs) => {
             const result = await fetch('/private-session/end', {
                 method: 'POST', credentials: 'same-origin',
                 headers: {'Content-Type': 'application/json'}, body: '{}'
             });
             if (!result.ok) throw new Error('Private session could not end. Please retry.');
+            return inputs;
         }"""

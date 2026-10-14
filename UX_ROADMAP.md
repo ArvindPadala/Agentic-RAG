@@ -157,7 +157,7 @@ Implementation order also considers dependencies and visitor impact.
 
 ## Phase 4 — End-to-end visitor validation
 
-- [ ] **21. Validate the complete first-time visitor journey.** *(P1/P3)*
+- [x] **21. Validate the complete first-time visitor journey.** *(P1/P3)*
   Exercise arrival → report exploration → supported example → cited answer →
   evidence inspection → follow-up → optional memory → clear/end session.
   Cover empty-corpus, missing-evidence, provider/check failure, older citations,
@@ -335,4 +335,32 @@ their underlying retrieval architecture matches this application's.
   additional container smoke check built the execution UI and confirmed an API
   failure produces an Unavailable verdict. SQL/dependencies were unchanged, so
   database checks were not repeated. No push or cloud deployment was performed.
-- **Next: Phase 4, item 21 — complete first-time visitor journey validation.**
+- Phase 3 is committed as `689b1ae`.
+
+### Phase 4 — Complete visitor-journey validation
+
+- **Item 21 complete for local synthetic validation.** The expanded browser
+  runner covers the full journey and has a `--memory-only` mode to avoid rerunning
+  completed public checks while investigating private-session behavior.
+- Desktop (1360px), mobile-emulated (390px) and independent-browser identity
+  checks passed, including explicit opt-in, encrypted HttpOnly cookies, save/
+  immediate panel update, reload, Forget, independent saved memories and returning
+  to public mode without remote deletion. Public checks cover citations, earlier
+  sources, follow-ups, unavailable/missing evidence, provider failure/retry,
+  keyboard interaction, and actual graph execution details.
+- Fixed confirmed Gradio 6.9 UI regressions found by these checks: loading
+  indicators persisted across completed multi-component identity refreshes,
+  and JS-only private-session actions did not reliably run their `.success()`
+  refresh. Async JS actions now return their inputs to a backend refresh in the
+  same event; errors still stop that refresh and server identity checks remain.
+- Verification: **116 pytest tests passed**, lint reported 0 configured issues,
+  **28 pgTAP checks passed** on disposable PostgreSQL 17.11, and the production
+  image build/dependency check passed (existing Docker casing warning). The full
+  browser journey passed after fixes. Earlier exploratory browser runs encountered
+  Chrome disconnects; the final run used fresh renderer/profiles per viewport.
+- [UX_VALIDATION.md](UX_VALIDATION.md) records the command sequence, coverage
+  matrix, fixture boundaries, results and explicit pending hosted/live checks.
+  No real provider/CAPTCHA/hosted-memory operation, touch-device test, push or
+  deployment was performed. Local completion does not establish hosted readiness.
+- **All four planned UX phases are locally implemented/validated. Next: hosted
+  live-provider/CAPTCHA/memory smoke checks and corpus-specific quality evaluation.**

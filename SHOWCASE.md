@@ -83,6 +83,10 @@ against this turn's retrieved context; it is not a correctness guarantee.
 The **How this works** tab separates earlier FEMA-corpus benchmarks from IPCC
 retrieval smoke checks and current-request observations.
 
+See [UX_VALIDATION.md](UX_VALIDATION.md) for the complete synthetic visitor-journey
+checks, memory/isolation and recovery coverage, exact verification commands, and
+the hosted/live checks that remain pending.
+
 1. **Cross-report synthesis — Query Decomposition**
    Compare climate risks at 1.5°C and 2°C with emissions pathways limiting warming
    to 1.5°C. Require separate citations and preserved uncertainty language.

@@ -825,13 +825,19 @@ def build_ui(gemini_client, memory, memory_file,
                                owner_state, welcome, readiness_display, image_gallery, source_pages,
                                followups, user_input, request_status, execution_details, save_btn]
             session_inputs = [chatbot, conv_state, owner_state, scope_state]
-            demo.load(fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
-            start_session_btn.click(fn=None, js=private_sessions.start_js()).success(
-                fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
-            forget_session_btn.click(fn=None, js=private_sessions.forget_js()).success(
-                fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
-            end_session_btn.click(fn=None, js=private_sessions.end_js()).success(
-                fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
+            # These identity refreshes update many components, including closed
+            # accordions. Avoid persistent frontend loading overlays on them;
+            # the session status itself reports the result/error.
+            demo.load(fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs,
+                      show_progress="hidden")
+            # Run identity refresh in the same event after its async JS action.
+            # JS-only events do not reliably fire .success() in Gradio 6.9.
+            start_session_btn.click(fn=refresh_private_session, js=private_sessions.start_js(),
+                                    inputs=session_inputs, outputs=session_outputs, show_progress="hidden")
+            forget_session_btn.click(fn=refresh_private_session, js=private_sessions.forget_js(),
+                                     inputs=session_inputs, outputs=session_outputs, show_progress="hidden")
+            end_session_btn.click(fn=refresh_private_session, js=private_sessions.end_js(),
+                                  inputs=session_inputs, outputs=session_outputs, show_progress="hidden")
 
         # ── Dummy GPU Function to satisfy ZeroGPU startup checks ──────────
         @gpu_decorator
