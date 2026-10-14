@@ -5,11 +5,18 @@ A fast LLM-as-a-judge interceptor that evaluates whether the agent's
 generated answer hallucinated any claims not grounded in the retrieved context.
 """
 import json
+from dataclasses import dataclass
 from google.genai import types as genai_types
 from llm_router import GeminiRouter
 from utils.logger import get_logger
 
 logger = get_logger("live_guardrail")
+
+
+@dataclass(frozen=True)
+class GroundingResult:
+    status: str
+    reason: str
 
 GUARDRAIL_PROMPT = """You are a strict faithfulness evaluator for a Retrieval-Augmented Generation (RAG) system.
 Your job is to determine if the generated Answer contains any claims, facts, or numbers that are NOT explicitly supported by the Retrieved Context.
@@ -30,10 +37,10 @@ Format your output exactly like this:
 
 
 def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: GeminiRouter,
-                       model: str = "models/gemini-3.5-flash-lite") -> tuple[bool, str]:
+                       model: str = "models/gemini-3.5-flash-lite") -> GroundingResult:
     """
     Evaluates the final answer against the aggregated retrieved context.
-    Returns a tuple of (is_faithful, reasoning).
+    Returns Completed, Flagged, or Unavailable; errors never count as passes.
     """
     if not context_chunks:
         # If no context was retrieved, any factual claim in the answer is a hallucination.
@@ -56,6 +63,7 @@ def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: Ge
     config = genai_types.GenerateContentConfig(
         temperature=0.0,
         response_mime_type="application/json",
+        max_output_tokens=512,
         system_instruction=GUARDRAIL_PROMPT
     )
 
@@ -67,18 +75,13 @@ def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: Ge
         )
 
         result = json.loads(response.text)
-        is_faithful = result.get("is_faithful", True)
-        reason = result.get("reason", "No reason provided")
-
-        if is_faithful:
-            logger.info("Guardrail passed")
-        else:
-            logger.warning("Guardrail failed")
-
-        return is_faithful, reason
-
-    except Exception as e:
-        logger.error(f"❌ Guardrail execution failed: {e}. Defaulting to pass.")
-        # Fail open in production so we don't break the UX if the guardrail API
-        # errors
-        return True, "Guardrail API error."
+        if (not isinstance(result, dict) or type(result.get("is_faithful")) is not bool
+                or not isinstance(result.get("reason"), str) or not result["reason"].strip()
+                or len(result["reason"]) > 1000):
+            raise ValueError("Invalid grounding verdict")
+        status = "completed" if result["is_faithful"] else "flagged"
+        logger.info("Grounding check outcome: %s", status)
+        return GroundingResult(status, result["reason"].strip())
+    except Exception:
+        logger.warning("Grounding check unavailable")
+        return GroundingResult("unavailable", "The check service did not return a valid verdict. Inspect the cited sources; retry the check later.")

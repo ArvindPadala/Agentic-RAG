@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 # Exact source allowlist: Git ignore rules are not a deployment data boundary.
 # Public corpus provisioning is a separate explicit step, not a workspace copy.
 SPACE_SOURCE_FILES = (
-    "app.py", "agent.py", "access_control.py", "config.py", "evidence.py",
+    "app.py", "agent.py", "access_control.py", "config.py", "evidence.py", "execution.py",
     "supabase_backend.py", "private_sessions.py",
     "showcase_corpus.py", "showcase_sources.json", "manage_public_corpus.py", "SHOWCASE.md",
     "gemini_helpers.py", "hybrid_search.py", "llm_router.py",

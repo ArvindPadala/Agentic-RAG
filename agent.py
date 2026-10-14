@@ -17,6 +17,7 @@ Prerequisites (already done if you ran the notebook):
 """
 
 import concurrent.futures
+from execution import ExecutionTrace
 from typing import TypedDict, Any, List
 from langgraph.graph import StateGraph, START, END
 from langsmith import traceable
@@ -85,7 +86,7 @@ def load_chroma_collection(collection_name: str,
 # ── 4. Search Tool ──────────────────────────────────────────────────────
 def build_search_tool(collection, gemini_client, s3_client, bucket: str,
                       use_hybrid: bool = False, use_reranker: bool = False,
-                      policy=None, citation_renderer=None, evidence_collector=None):
+                      policy=None, citation_renderer=None, evidence_collector=None, execution=None):
     """
     Build the search_knowledge_base function that the Gemini agent will call.
 
@@ -230,7 +231,16 @@ def build_search_tool(collection, gemini_client, s3_client, bucket: str,
     )
     tool = genai_types.Tool(function_declarations=[tool_declaration])
 
-    return search_knowledge_base, tool
+    def observed_search(query):
+        execution.search_started()
+        try:
+            with execution.measure("retrieval"):
+                return search_knowledge_base(query)
+        except Exception:
+            execution.search_failed()
+            raise
+
+    return (observed_search if execution else search_knowledge_base), tool
 
 
 # ── 5. Agent Config ─────────────────────────────────────────────────────
@@ -294,6 +304,8 @@ class AgentState(TypedDict):
     model: str
     use_guardrail: bool
     final_text: str
+    execution: Any
+    turn_start: int
 
 
 def build_agent_graph():
@@ -330,11 +342,13 @@ def build_agent_graph():
         else:
             forced_config = generation_config
 
-        response = gemini_client.models.generate_content(
-            model=model,
-            contents=conversation_history,
-            config=forced_config,
-        )
+        execution = state["execution"]
+        execution.generation_started()
+        with execution.measure("generation", "Generating a response or next search"):
+            response = gemini_client.models.generate_content(
+                model=model, contents=conversation_history, config=forced_config)
+        if not response.candidates or not response.candidates[0].content or not response.candidates[0].content.parts:
+            raise RuntimeError("The provider returned no usable response")
 
         candidate = response.candidates[0]
         conversation_history.append(candidate.content)
@@ -345,6 +359,7 @@ def build_agent_graph():
     def execute_tools(state: AgentState):
         conversation_history = state["conversation_history"]
         tool_map = state["tool_map"]
+        state["execution"].stage("Searching the authorized reports")
 
         last_message = conversation_history[-1]
         tool_calls = [
@@ -363,9 +378,9 @@ def build_agent_graph():
             if tool_name in tool_map:
                 try:
                     tool_result = tool_map[tool_name](**tool_args)
-                except Exception as e:
-                    logger.error(f"Error executing {tool_name}: {e}")
-                    tool_result = f"Error: {e}"
+                except Exception:
+                    logger.warning("Knowledge-base tool unavailable")
+                    tool_result = "Error: Search is temporarily unavailable. Retry or try a different question."
             else:
                 tool_result = f"Error: Unknown tool '{tool_name}'"
 
@@ -401,7 +416,7 @@ def build_agent_graph():
             from live_guardrail import check_faithfulness
 
             context_chunks = []
-            for content in conversation_history:
+            for content in conversation_history[state["turn_start"]:]:
                 if content.role == "user":
                     for part in content.parts:
                         if hasattr(
@@ -413,14 +428,18 @@ def build_agent_graph():
                             res_text = res_dict.get(
                                 "result", "") if isinstance(
                                 res_dict, dict) else ""
-                            if res_text and "No documents found" not in res_text:
+                            if res_text and "No documents found" not in res_text and not res_text.startswith("Error:"):
                                 context_chunks.append(res_text)
 
-            is_faithful, reason = check_faithfulness(
-                final_text, context_chunks, gemini_client)
-
-            if not is_faithful:
-                final_text += f"\n\n> ⚠️ **Guardrail Warning:** This answer may contain information not explicitly grounded in the retrieved context. (Reason: {reason})"
+            with state["execution"].measure("grounding", "Checking the answer against retrieved evidence"):
+                verdict = check_faithfulness(final_text, context_chunks, gemini_client)
+            state["execution"].set_grounding(verdict)
+            if verdict.status == "flagged":
+                final_text += "\n\n> **Automated grounding check: Flagged.** Some claims may not be supported by the retrieved evidence. Inspect the sources."
+            elif verdict.status == "unavailable":
+                final_text += "\n\n> **Automated grounding check: Unavailable.** The answer was not successfully checked. Inspect the sources or retry later."
+            else:
+                final_text += "\n\n> **Automated grounding check: Completed.** No unsupported claims were flagged by the automated check. This is not a guarantee of correctness."
 
         conversation_history[-1] = genai_types.Content(
             role="model", parts=[genai_types.Part(text=final_text)])
@@ -470,13 +489,16 @@ def run_agent_turn(
     max_iterations: int = 7,
     use_decomposition: bool = False,
     use_guardrail: bool = False,
+    execution=None,
 ) -> str:
     """
     Process one user message through the LangGraph agent state machine.
     """
+    execution = execution or ExecutionTrace("Agent/CLI")
+    turn_start = len(conversation_history)
     if use_decomposition:
         from query_optimizer import decompose_query
-        sub_queries = decompose_query(user_message, gemini_client)
+        sub_queries = decompose_query(user_message, gemini_client, execution=execution)
         if len(sub_queries) > 1 or (len(sub_queries) ==
                                     1 and sub_queries[0] != user_message):
             formatted_queries = "\n".join([f"- {q}" for q in sub_queries])
@@ -507,7 +529,9 @@ def run_agent_turn(
         "tool_map": tool_map,
         "model": model,
         "use_guardrail": use_guardrail,
-        "final_text": ""
+        "final_text": "",
+        "execution": execution,
+        "turn_start": turn_start,
     }
 
     final_state = COMPILED_AGENT_GRAPH.invoke(initial_state)

@@ -25,6 +25,9 @@ import time
 import argparse
 import requests
 import os
+from contextvars import copy_context
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue, Empty
 from html import escape
 from copy import deepcopy
 from pathlib import Path
@@ -47,6 +50,7 @@ from supabase_backend import SupabaseBackend, SupabaseError
 from private_sessions import PrivateSessions
 from evidence import (EvidenceCollector, EvidenceHistory, EvidenceTurn, EVIDENCE_CLICK_JS,
                       authorized_passages, format_citations, render_cards)
+from execution import ExecutionTrace, execution_status, render_execution
 
 logger = get_logger("app")
 
@@ -315,7 +319,9 @@ def make_chat_fn(gemini_client, memory, memory_file,
 
     def chat(user_message: str, history: list, conversation_history: list,
               search_type: str, use_decomposition: bool, use_guardrail: bool,
-              owner_id=None, request=None, first_citation=1):
+              owner_id=None, request=None, first_citation=1, execution=None):
+        if execution:
+            execution.stage("Preparing authorized research")
         request_memory = memory
         current_owner = None
         snapshot = None
@@ -324,6 +330,8 @@ def make_chat_fn(gemini_client, memory, memory_file,
                 snapshot = private_sessions.load_for_request(request)
             except SupabaseError as error:
                 # Expired/unverifiable identity cannot reuse private context.
+                if execution:
+                    execution.finish("unavailable")
                 return finish(([], [], "", str(error), None))
             current_owner = snapshot.user_id if snapshot else None
             request_memory = snapshot.memory if snapshot else {}
@@ -338,6 +346,8 @@ def make_chat_fn(gemini_client, memory, memory_file,
 
         status = corpus_status(collection, policy)
         if status[0] != "ready":
+            if execution:
+                execution.finish("unavailable")
             return finish((history + [{"role": "user", "content": user_message},
                                {"role": "assistant", "content": corpus_status_message(status, policy)}],
                     conversation_history, "", memory_status, current_owner))
@@ -358,6 +368,7 @@ def make_chat_fn(gemini_client, memory, memory_file,
             policy=policy,
             citation_renderer=showcase.render_citation if showcase else None,
             evidence_collector=evidence,
+            execution=execution,
         )
         tool_map = {"search_knowledge_base": search_fn}
 
@@ -388,22 +399,28 @@ def make_chat_fn(gemini_client, memory, memory_file,
                 model=model_id,
                 use_decomposition=use_decomposition,
                 use_guardrail=use_guardrail,
+                execution=execution,
             )
             elapsed_time = time.time() - start_time
         except Exception as e:
             if is_rate_limit_error(e):
+                if execution:
+                    execution.finish("rate_limited")
                 error_msg = (
-                    "⚠️ **Daily limit reached.**\n\n"
-                    "The free-tier quota is used up for today.\n"
-                    "👉 **Please try again tomorrow.**"
+                    "**Provider rate/quota limit reached.** This can be a temporary rate limit "
+                    "or a daily quota. Please retry later. Your previous completed context was preserved."
                 )
             elif is_overload_error(e):
+                if execution:
+                    execution.finish("overloaded")
                 error_msg = (
                     "⚠️ **The model is temporarily overloaded** (high demand).\n\n"
                     "This is usually resolved in a few minutes.\n"
                     "👉 **Wait a moment and retry.**"
                 )
             else:
+                if execution:
+                    execution.finish("failed")
                 error_msg = ("❌ **The request could not be completed. Please retry.**"
                              if policy.is_public else f"❌ **Unexpected error:** {e}")
 
@@ -416,16 +433,22 @@ def make_chat_fn(gemini_client, memory, memory_file,
             records = evidence.snapshot()
             allowed = authorized_passages(records, collection, policy)
             if len(allowed) != len(records):
+                if execution:
+                    execution.finish("withheld")
                 history = history + [{"role": "assistant", "content":
                     "The available sources changed during this request. Please retry using the currently authorized reports."}]
                 return finish((history, conversation_history, "", memory_status, current_owner))
             display_response, cited = format_citations(clean_response(raw_response), allowed)
             display_response += f"\n\n*(Processed in {elapsed_time:.2f}s)*"
             turn = EvidenceTurn(user_message, records, cited, context_start=len(conversation_history))
+            if execution:
+                execution.finish("completed" if records else "no_evidence", records, cited)
             history = history + [{"role": "assistant", "content": display_response}]
             return finish((history, working_history, "", memory_status, current_owner), turn)
 
         conversation_history = working_history
+        if execution:
+            execution.finish("completed")
 
         # Extract visual grounding image URLs from the response text
         image_urls = extract_image_urls(raw_response)
@@ -528,7 +551,7 @@ def build_ui(gemini_client, memory, memory_file,
         # This mutable server-side state is unique per Gradio browser session.
         # Lifecycle callbacks invalidate pending outputs without a global cache
         # or trusting client-provided ownership/generation identifiers.
-        scope_state = gr.State({"generation": None, "evidence": EvidenceHistory()})
+        scope_state = gr.State({"generation": None, "evidence": EvidenceHistory(), "execution": None})
         # tracks selected retrieval engine
         search_state = gr.State(DEFAULT_SEARCH_LABEL)
         decomp_state = gr.State(False)
@@ -570,6 +593,7 @@ def build_ui(gemini_client, memory, memory_file,
 
                 with gr.Row(elem_id="research-workspace"):
                     with gr.Column(scale=3, min_width=300, elem_id="conversation-col"):
+                        request_status = gr.Markdown("Ready for a research question.", elem_id="request-status")
                         chatbot = gr.Chatbot(label="Research conversation", height=380, visible=False,
                                              render_markdown=True, elem_id="research-chat")
                         with gr.Row(elem_id="question-composer"):
@@ -584,6 +608,8 @@ def build_ui(gemini_client, memory, memory_file,
                         with gr.Row(visible=False, elem_id="follow-up-tasks") as followups:
                             followup_explain = gr.Button("Explain the evidence", size="sm", elem_id="followup-explain")
                             followup_compare = gr.Button("Compare with another report", size="sm", elem_id="followup-compare")
+                        with gr.Accordion("Latest research request — execution details", open=False, elem_id="execution-details"):
+                            execution_details = gr.HTML(render_execution(None), elem_id="execution-summary")
 
                     with gr.Column(scale=1, min_width=260, elem_id="evidence-col"):
                         gr.Markdown("### Evidence by answer\nSelect a numbered citation or a source card to inspect its passage and highlighted page.")
@@ -666,25 +692,26 @@ def build_ui(gemini_client, memory, memory_file,
             with gr.Tab("How this works"):
                 gr.Markdown("## System Architecture")
                 gr.Markdown(
-                    "This system implements an advanced, production-grade Retrieval-Augmented Generation (RAG) architecture.\n\n"
+                    "This demo combines retrieval, source inspection, and optional automated checks.\n\n"
                     "- **Agent Orchestration**: Built using **LangGraph** as a cyclic state machine. Handles routing, tools, and fallback loops.\n"
                     "- **Retrieval Engine**: A 3-stage pipeline combining semantic vector search (ChromaDB), keyword search (BM25), and cross-encoder reranking (ms-marco-MiniLM).\n"
                     "- **Visual Grounding**: The public science corpus uses local PyMuPDF text blocks and page coordinates; the optional AWS/ADE pipeline supports layout-aware parsing. Local extraction is not OCR or structured table understanding.\n"
-                    "- **Self-Correction & Guardrails**: Features a dynamic Query Optimizer and a Live Faithfulness Guardrail to intercept hallucinations before they reach the user.\n"
+                    "- **Query planning & Grounding Checks**: Optional focused search queries and an automated answer/context comparison. Checks can flag claims or be unavailable; they do not guarantee correctness.\n"
                 )
 
-                try:
-                    if showcase:
-                        gr.Markdown("**Historical benchmark:** The metrics below were measured on the earlier corpus, not these IPCC reports. Science-corpus retrieval smoke checks are documented in SHOWCASE.md; a full benchmark is pending.")
-                    with open("EVALUATION_REPORT.md", "r") as f:
-                        eval_content = f.read()
-                    gr.Markdown(f"## Evaluation Metrics\n\n{eval_content}")
-                except Exception:
-                    gr.Markdown("Evaluation metrics not found.")
+                gr.Markdown(
+                    "## What has actually been measured\n"
+                    "- **Historical FEMA-based corpus:** MRR@5 0.8818 and Recall@1 0.8462 in the earlier retrieval experiment. "
+                    "A 15-row generation smoke test reported Ragas faithfulness 0.7735. These are dataset/sample-specific results, not current-demo guarantees.\n"
+                    "- **IPCC showcase:** three evidence queries passed vector, hybrid and reranked retrieval smoke checks (9 combinations). "
+                    "This is coverage smoke testing, not a quality/faithfulness benchmark.\n"
+                    "- **Current requests:** execution details show observed stages, counts and timings. "
+                    "A completed grounding check is an automated judgement about one answer, not a measured corpus accuracy score.\n"
+                    "A science-specific golden dataset and live end-to-end quality evaluation remain pending.")
 
         # ── Event wiring ───────────────────────────────────────────────────
 
-        def view_updates(result, evidence_history, allowed):
+        def view_updates(result, evidence_history, allowed, summary=None):
             return (gr.update(value=result[0], visible=bool(result[0])), result[1],
                     render_cards(evidence_history.turns, allowed), result[3], result[4],
                     gr.update(visible=not bool(result[0])),
@@ -693,9 +720,10 @@ def build_ui(gemini_client, memory, memory_file,
                     gr.update(open=False), gr.update(visible=bool(result[1])),
                     gr.update(placeholder="Ask a follow-up about this answer…" if result[1]
                               else "Ask a research question about the available reports…"),
+                    execution_status(summary), render_execution(summary),
                     gr.update(interactive=bool(result[1]) and (not policy.is_public or result[4] is not None)))
 
-        def commit_view(scope, generation, result, candidate):
+        def commit_view(scope, generation, result, candidate, execution=None):
             if candidate.owner != result[4]:
                 candidate.clear(result[4])
             tracked = candidate.records() + (result[5].records if result[5] is not None else ())
@@ -709,10 +737,18 @@ def build_ui(gemini_client, memory, memory_file,
                            "The available sources changed during this request. Please retry with the currently authorized reports."}],
                           [], "", result[3], result[4], None)
                 allowed = ()
+                if execution:
+                    execution.finish("withheld")
             elif result[5] is not None:
                 candidate.append(result[5])
                 result = (result[0], candidate.trim_context(result[1]), *result[2:])
-            view = view_updates(result, candidate, allowed)
+            summary = execution.snapshot() if execution else None
+            if summary and summary["status"] == "withheld":
+                summary["grounding"] = "unavailable"
+                summary["grounding_reason"] = "The evaluated answer was withheld because source access changed."
+            if not result[0]:
+                summary = None
+            view = view_updates(result, candidate, allowed, summary)
             # Metadata checks can perform I/O. Check again after presentation
             # work and commit under the same lock used by end/clear/refresh.
             stored = scope["evidence"]
@@ -721,15 +757,27 @@ def build_ui(gemini_client, memory, memory_file,
                     return tuple(gr.skip() for _ in chat_outputs)
                 stored.turns, stored.next_number = candidate.turns, candidate.next_number
                 stored.answer_count, stored.owner = candidate.answer_count, candidate.owner
+                scope["execution"] = summary
             return view
 
         def submit(message, history, conv_history,
-                   search_type, use_decomp, use_guardrail, owner_id, scope,
-                   request: gr.Request):
+                    search_type, use_decomp, use_guardrail, owner_id, scope,
+                    request: gr.Request, progress=gr.Progress()):
             stored = scope["evidence"]
             with stored.lock:
                 scope["generation"] = generation = uuid4().hex
                 candidate = deepcopy(stored)
+            progress_context = copy_context()
+            stage_events = 0
+            def on_stage(label):
+                nonlocal stage_events
+                with stored.lock:
+                    if scope["generation"] == generation:
+                        stage_events += 1
+                        # LangGraph nodes may run on worker threads; preserve
+                        # this Gradio request's progress context, not another's.
+                        progress_context.copy().run(progress, (stage_events, None), desc=label, unit="observed stage events")
+            execution = ExecutionTrace(search_type or DEFAULT_SEARCH_LABEL, on_stage=on_stage)
             if len(authorized_passages(candidate.records(), collection, policy)) != len(candidate.records()):
                 # Historical tool results from revoked sources must not enter
                 # the provider's context on a follow-up.
@@ -738,8 +786,8 @@ def build_ui(gemini_client, memory, memory_file,
             result = chat_fn(message, history, conv_history,
                               search_type, use_decomp, use_guardrail,
                               owner_id=owner_id, request=request,
-                              first_citation=candidate.next_number)
-            return commit_view(scope, generation, result, candidate)
+                              first_citation=candidate.next_number, execution=execution)
+            return commit_view(scope, generation, result, candidate, execution)
 
         if private_sessions is not None:
             def refresh_private_session(history, conv_history, previous_owner, scope, request: gr.Request):
@@ -775,7 +823,7 @@ def build_ui(gemini_client, memory, memory_file,
 
             session_outputs = [session_status, chatbot, conv_state, evidence_cards, memory_display,
                                owner_state, welcome, readiness_display, image_gallery, source_pages,
-                               followups, user_input, save_btn]
+                               followups, user_input, request_status, execution_details, save_btn]
             session_inputs = [chatbot, conv_state, owner_state, scope_state]
             demo.load(fn=refresh_private_session, inputs=session_inputs, outputs=session_outputs)
             start_session_btn.click(fn=None, js=private_sessions.start_js()).success(
@@ -796,7 +844,42 @@ def build_ui(gemini_client, memory, memory_file,
                        guardrail_state, owner_state, scope_state]
         chat_outputs = [chatbot, conv_state, evidence_cards, memory_display, owner_state,
                         welcome, readiness_display, image_gallery, source_pages,
-                        followups, user_input, save_btn]
+                        followups, user_input, request_status, execution_details, save_btn]
+
+        # Preserve the existing synchronous API. The browser receives live
+        # status-only yields from the same implementation below.
+        gr.on(triggers=[], fn=submit, inputs=chat_inputs, outputs=chat_outputs, api_name="submit")
+
+        def stream_submit(message, history, conv_history, search_type, use_decomp,
+                          use_guardrail, owner_id, scope, request: gr.Request):
+            events = Queue()
+            context = copy_context()
+            request_generation = [None]
+
+            def send_stage(value, desc=None, **kwargs):
+                request_generation[0] = scope["generation"]
+                events.put((request_generation[0], desc))
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(context.run, submit, message, history, conv_history,
+                                          search_type, use_decomp, use_guardrail, owner_id,
+                                          scope, request, send_stage)
+                while not pending.done():
+                    try:
+                        generation, label = events.get(timeout=0.05)
+                    except Empty:
+                        continue
+                    with scope["evidence"].lock:
+                        if generation != scope["generation"]:
+                            continue
+                    update = [gr.skip() for _ in chat_outputs]
+                    update[11] = label
+                    yield tuple(update)
+                result = pending.result()
+                with scope["evidence"].lock:
+                    if request_generation[0] is not None and request_generation[0] != scope["generation"]:
+                        result = tuple(gr.skip() for _ in chat_outputs)
+                yield result
 
         def select_evidence(owner_id, scope, evt: gr.EventData, request: gr.Request):
             stored = scope["evidence"]
@@ -817,6 +900,7 @@ def build_ui(gemini_client, memory, memory_file,
                         return gr.skip(), gr.skip(), gr.skip()
                     scope["generation"] = uuid4().hex
                     stored.clear(current_owner)
+                    scope["execution"] = None
                 return render_cards([], ()), "<p>Your session changed. Start a new conversation.</p>", gr.update(open=False)
             allowed = authorized_passages(candidate.records(), collection, policy)
             number = getattr(evt, "citation", None)
@@ -892,7 +976,8 @@ def build_ui(gemini_client, memory, memory_file,
                 fn=choose_preset(preset), api_name="example_" + preset[0],
                 outputs=[user_input, search_type_toggle, decomp_toggle, guardrail_toggle,
                          search_state, decomp_state, guardrail_state],
-            ).then(fn=submit, inputs=chat_inputs, outputs=chat_outputs).then(
+            ).then(fn=stream_submit, inputs=chat_inputs, outputs=chat_outputs,
+                   show_progress="minimal", show_progress_on=[request_status]).then(
                 fn=lambda: gr.update(value=""), outputs=user_input)
 
         def followup_prompt(prompt):
@@ -905,7 +990,8 @@ def build_ui(gemini_client, memory, memory_file,
             ("compare", followup_compare, "Compare your previous answer with evidence from another available report. Cite the reports and explain any differences or missing evidence."),
         ):
             button.click(fn=followup_prompt(prompt), api_name="followup_" + key, outputs=user_input).then(
-                fn=submit, inputs=chat_inputs, outputs=chat_outputs).then(
+                fn=stream_submit, inputs=chat_inputs, outputs=chat_outputs,
+                show_progress="minimal", show_progress_on=[request_status]).then(
                 fn=lambda: gr.update(value=""), outputs=user_input)
 
         # Sync toggle → search state
@@ -931,7 +1017,7 @@ def build_ui(gemini_client, memory, memory_file,
 
         # Send on button click
         send_btn.click(
-            fn=submit,
+            fn=stream_submit,
             inputs=[
                 user_input,
                 chatbot,
@@ -940,6 +1026,7 @@ def build_ui(gemini_client, memory, memory_file,
                 decomp_state,
                 guardrail_state, owner_state, scope_state],
             outputs=chat_outputs,
+            show_progress="minimal", show_progress_on=[request_status],
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,
@@ -947,7 +1034,7 @@ def build_ui(gemini_client, memory, memory_file,
 
         # Send on Enter key
         user_input.submit(
-            fn=submit,
+            fn=stream_submit,
             inputs=[
                 user_input,
                 chatbot,
@@ -956,6 +1043,7 @@ def build_ui(gemini_client, memory, memory_file,
                 decomp_state,
                 guardrail_state, owner_state, scope_state],
             outputs=chat_outputs,
+            show_progress="minimal", show_progress_on=[request_status],
         ).then(
             fn=lambda: gr.update(value=""),
             outputs=user_input,

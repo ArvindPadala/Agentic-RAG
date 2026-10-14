@@ -8,6 +8,8 @@ Screenshots and browser profile/cache are kept in the supplied temporary directo
 import argparse
 import os
 import re
+import time
+from types import SimpleNamespace
 from pathlib import Path
 import socket
 import tempfile
@@ -24,6 +26,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from app import build_ui, DEMO_CSS
 from access_control import RuntimePolicy
+from google.genai import types
 from showcase_corpus import ShowcaseCorpus, curated_sources
 from tests.test_runtime_privacy import ready_collection
 
@@ -101,22 +104,43 @@ def main():
                      "score": 0.9, "chunk_type": "text"}
         turns = []
 
-        def synthetic_turn(**kwargs):
-            turns.append((kwargs["use_decomposition"], kwargs["use_guardrail"]))
-            context = kwargs["tool_map"]["search_knowledge_base"]("synthetic climate query")
-            number = re.search(r"Evidence \[(\d+)\]", context).group(1)
-            kwargs["conversation_history"].append("synthetic completed turn")
-            # Deliberately omit all image URLs: structured evidence must survive.
-            return f"Synthetic answer for browser verification [{number}]. Invalid reference [999]."
+        def response(text):
+            return types.GenerateContentResponse(candidates=[types.Candidate(
+                content=types.Content(role="model", parts=[types.Part(text=text)]))])
+
+        planning = {"used": False}
+
+        def generate_content(model, contents, config):
+            # The real graph, optimiser and checker run. Only provider responses
+            # and retrieval data are synthetic; latency makes real progress visible.
+            time.sleep(0.8)
+            instruction = config.system_instruction or ""
+            if "expert search query optimizer" in instruction:
+                planning["used"] = True
+                return response('["Compare warming risks", "Compare emissions pathways"]')
+            if "strict faithfulness evaluator" in instruction:
+                turns[-1] = (turns[-1][0], True)
+                return response("malformed grounding verdict")
+            last = contents[-1]
+            tool_results = [p.function_response for p in last.parts if p.function_response]
+            if tool_results:
+                number = re.search(r"Evidence \[(\d+)\]", tool_results[0].response["result"]).group(1)
+                return response(f"Synthetic answer for browser verification [{number}]. Invalid reference [999].")
+            turns.append((planning["used"], False))
+            planning["used"] = False
+            return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
+                role="model", parts=[types.Part(function_call=types.FunctionCall(
+                    name="search_knowledge_base", args={"query": "synthetic climate query"}))]))])
+
+        provider = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
 
         with socket.socket() as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]
         try:
-            with patch("app.run_agent_turn", side_effect=synthetic_turn), \
-                    patch("agent.search_chroma", return_value=[retrieved]), \
+            with patch("agent.search_chroma", return_value=[retrieved]), \
                     patch("hybrid_search.search_chroma_hybrid", return_value=[retrieved]):
-                demo = build_ui(None, {}, "unused.json", None, collection, None, showcase=corpus)
+                demo = build_ui(provider, {}, "unused.json", None, collection, None, showcase=corpus)
                 demo.queue().launch(server_name="127.0.0.1", server_port=port,
                                     prevent_thread_lock=True, blocked_paths=[str(root)],
                                     app_kwargs={"routes": corpus.routes(collection, RuntimePolicy())},
@@ -141,6 +165,7 @@ def main():
                     check_layout(browser, mobile=label == "mobile")
                     browser.save_screenshot(str(args.artifacts / (label + "-welcome.png")))
                     activate(browser, browser.find_element(By.ID, "preset-fact"), mobile=label == "mobile")
+                    wait.until(lambda driver: "Generating a response or next search" in driver.find_element(By.TAG_NAME, "body").text)
                     wait.until(lambda driver: "Synthetic answer" in driver.find_element(By.ID, "research-chat").text)
                     assert turns[-1] == (False, False)
                     wait.until(EC.invisibility_of_element_located((By.ID, "research-welcome")))
@@ -178,6 +203,19 @@ def main():
                     activate(browser, browser.find_element(By.ID, "preset-compare"), mobile=label == "mobile")
                     wait.until(lambda driver: "Synthetic answer" in driver.find_element(By.ID, "research-chat").text)
                     assert turns[-1] == (True, False)
+                    browser.find_element(By.CSS_SELECTOR, "#execution-details button").send_keys(Keys.ENTER)
+                    details = browser.find_element(By.ID, "execution-summary").text
+                    assert "Compare warming risks" in details and "Compare emissions pathways" in details
+                    assert "Search calls: 1" in details and "Agent generation calls: 2" in details
+                    assert "Not Run" in details
+                    browser.find_element(By.CSS_SELECTOR, "#execution-details button").send_keys(Keys.ENTER)
+                    wait.until(EC.element_to_be_clickable((By.ID, "clear-chat"))).send_keys(Keys.ENTER)
+                    wait.until(EC.visibility_of_element_located((By.ID, "research-welcome")))
+                    browser.find_element(By.CSS_SELECTOR, "#evidence-limits button").send_keys(Keys.ENTER)
+                    activate(browser, browser.find_element(By.ID, "preset-limits"), mobile=label == "mobile")
+                    wait.until(lambda driver: "Automated grounding check: Unavailable" in driver.find_element(By.ID, "research-chat").text)
+                    assert turns[-1] == (False, True)
+                    assert "grounding check was unavailable" in browser.find_element(By.ID, "request-status").text
                     wait.until(EC.element_to_be_clickable((By.ID, "clear-chat"))).send_keys(Keys.ENTER)
                     wait.until(EC.visibility_of_element_located((By.ID, "research-welcome")))
                     browser.find_element(By.CSS_SELECTOR, "#advanced-options button").send_keys(Keys.ENTER)
@@ -189,7 +227,7 @@ def main():
                     for link in browser.find_elements(By.CSS_SELECTOR, ".report-card a"):
                         assert link.get_attribute("href").startswith("https://www.ipcc.ch/")
                     browser.save_screenshot(str(args.artifacts / (label + "-reports.png")))
-                    print(f"PASS {label}: validated citations, opaque page images, retained earlier sources, contextual follow-ups, presets/clear, keyboard, reports and layout")
+                    print(f"PASS {label}: real graph progress, decomposition/details, unavailable grounding, citations/pages, historical sources, follow-ups/clear, keyboard, reports and layout")
         except Exception:
             if browser is not None:
                 browser.save_screenshot(str(args.artifacts / "failure.png"))

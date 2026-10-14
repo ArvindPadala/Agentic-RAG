@@ -7,6 +7,7 @@ sub-queries before handing them off to the ReAct agent's search tool.
 import json
 from google.genai import types as genai_types
 from llm_router import GeminiRouter
+from contextlib import nullcontext
 from utils.logger import get_logger
 
 logger = get_logger("query_optimizer")
@@ -32,7 +33,7 @@ Example Output:
 
 
 def decompose_query(raw_query: str, gemini_router: GeminiRouter,
-                    model: str = "models/gemini-3.5-flash-lite") -> list[str]:
+                    model: str = "models/gemini-3.5-flash-lite", execution=None) -> list[str]:
     """
     Takes a raw user question and asks a fast LLM model to decompose it
     into a JSON list of targeted sub-queries.
@@ -42,28 +43,29 @@ def decompose_query(raw_query: str, gemini_router: GeminiRouter,
     config = genai_types.GenerateContentConfig(
         temperature=0.1,
         response_mime_type="application/json",
+        max_output_tokens=512,
         system_instruction=DECOMPOSITION_PROMPT
     )
 
     try:
-        response = gemini_router.models.generate_content(
-            model=model,
-            contents=[raw_query],
-            config=config
-        )
+        with execution.measure("decomposition", "Optimising search queries") if execution else nullcontext():
+            response = gemini_router.models.generate_content(model=model, contents=[raw_query], config=config)
 
         # Parse the JSON response
         sub_queries = json.loads(response.text)
 
-        if not isinstance(sub_queries, list) or not all(
-                isinstance(q, str) for q in sub_queries):
-            logger.warning(
-                "Query optimizer returned invalid JSON format. Falling back to raw query.")
-            return [raw_query]
+        if (not isinstance(sub_queries, list) or not 1 <= len(sub_queries) <= 3
+                or not all(isinstance(q, str) and q.strip() and len(q) <= 512 for q in sub_queries)):
+            raise ValueError("Invalid search queries")
+        sub_queries = list(dict.fromkeys(q.strip() for q in sub_queries))
+        if execution:
+            execution.set_decomposition("completed", sub_queries)
 
         logger.info("Decomposed into %s queries", len(sub_queries))
         return sub_queries
 
-    except Exception as e:
-        logger.error(f"❌ Query optimization failed: {e}. Falling back to raw query.")
+    except Exception:
+        logger.warning("Query optimisation unavailable; using the original question")
+        if execution:
+            execution.set_decomposition("fallback")
         return [raw_query]

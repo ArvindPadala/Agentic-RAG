@@ -120,35 +120,35 @@ Implementation order also considers dependencies and visitor impact.
 
 ## Phase 3 — Honest engineering visibility
 
-- [ ] **16. Show actual request progress and recovery actions.** *(P1)*
+- [x] **16. Show actual request progress and recovery actions.** *(P1)*
   Expose real queue/search/comparison/generation/check events, where applicable.
   Distinguish waiting, provider failure, and insufficient evidence; provide clear
   retry guidance. Do not simulate stages or completion percentages.
   **Done when:** a waiting visitor can tell what is happening, and failures do
   not look like successful research or silently damage conversation state.
 
-- [ ] **17. Make query decomposition observable.** *(P3)*
+- [x] **17. Make query decomposition observable.** *(P3)*
   Display actual generated search sub-queries in expandable execution details,
   including fallback/not-used status. Show operational facts, not hidden model
   reasoning. Keep private-session details scoped to that session.
   **Done when:** the decomposition demo visibly demonstrates its real behavior
   and the UI no longer promises steps it cannot show.
 
-- [ ] **18. Give the faithfulness check an explicit outcome contract.** *(P1)*
+- [x] **18. Give the faithfulness check an explicit outcome contract.** *(P1)*
   Represent Not run, Completed, Flagged, and Unavailable distinctly. Validate
   provider output and stop interpreting API/parse failures as a successful check.
   Label this as an automated grounding check, not a guarantee of correctness.
   **Done when:** UI status matches the actual check result, including errors and
   disabled checks, and the answer remains transparently inspectable.
 
-- [ ] **19. Add expandable execution details for technical visitors.** *(P3)*
+- [x] **19. Add expandable execution details for technical visitors.** *(P3)*
   Show actual retrieval mode, search count, retrieved/cited source counts, timing,
   decomposition status, and grounding-check status. Keep architecture/evaluation
   content secondary to the main research workspace.
   **Done when:** visitors can inspect the system after experiencing its value,
   without raw credentials, internal paths, other users' state, or invented stats.
 
-- [ ] **20. Keep performance and quality claims tied to their dataset.** *(P1)*
+- [x] **20. Keep performance and quality claims tied to their dataset.** *(P1)*
   Preserve the distinction between historical metrics, IPCC retrieval smoke
   checks, and future science-corpus quality measurements. Make that distinction
   visible wherever metrics are presented in the redesigned demo.
@@ -286,4 +286,53 @@ their underlying retrieval architecture matches this application's.
   A network-disabled container with mock configuration also built the evidence UI
   and validated citation formatting. No dependencies or SQL schema were changed;
   database checks were not repeated. No cloud deployment or live inference ran.
-- **Next: Phase 3, item 16 — actual request progress and recovery actions.**
+- Phase 2 is committed as `b08d545`.
+
+### Phase 3 — Honest engineering visibility
+
+- **Items 16–20 implemented.** The browser streams actual stage events from the
+  existing agent: preparing authorized research, query optimization, generation,
+  searching reports, and checking grounding when enabled. Gradio supplies its
+  queue indicator before execution. No completion percentage or simulated timer
+  is presented. The synchronous `submit` API remains available for integrations.
+- `execution.py` captures request-local operational facts: observed stages,
+  actual optimized sub-queries/fallback status, search calls/errors, agent
+  generation calls, retrieved/cited counts and cumulative timings. Details are
+  expandable and scoped to the current session. Router retries, token usage and
+  monetary cost are not inferred; parallel timing overlap is explained.
+- Grounding results are **Not run, Completed, Flagged, or Unavailable**. API
+  failures, malformed JSON, missing fields and non-boolean verdicts no longer
+  count as passes. The checker evaluates only this request's retrieved context,
+  excluding prior turns and tool-error messages. Completed is not a guarantee of
+  correctness. Unavailable and Flagged outcomes are visible in the answer/details.
+- Query optimization validates one to three nonempty, bounded queries and
+  records fallback to the original question. Raw provider exceptions are kept
+  out of progress, public tool errors and execution details. Rate-limit guidance
+  distinguishes potentially temporary rate limits from daily quota exhaustion.
+- Session lifecycle guards also protect buffered stage events, execution details,
+  and streamed final outputs. Clear/end/switch resets these details; a late
+  private response cannot restore its sub-queries or answer in a newer session.
+- “How this works” distinguishes historical FEMA-based metrics, the IPCC
+  nine-combination retrieval smoke checks, and per-request automated judgements.
+  It does not present Recall@1 as speed or historical scores as current-demo
+  guarantees. A science-specific quality benchmark remains pending.
+- Verification: `PYTHONDONTWRITEBYTECODE=1 make test` — **116 passed**, 40 existing
+  dependency/fixture warnings; `make lint` — 0 configured issues;
+  `git diff --check` — passed. New tests cover strict verdict schemas, service/
+  JSON errors, decomposition fallback, real graph stages/counts, current-turn
+  grounding context, disabled checks, empty responses, escaped diagnostics,
+  retrieval failures, rate-limit recovery and private streaming invalidation.
+- Browser command: `PYTHONDONTWRITEBYTECODE=1 python -m tests.browser_demo_ux
+  --artifacts <temporary-directory>` — desktop (1360px) and mobile-emulated
+  (390px) passed. The actual graph/optimizer/checker execute with synthetic
+  provider responses and retrieval data. Checks include a visible generation
+  stage, optimized queries and measured counts, disabled/unavailable grounding,
+  citations, image routes, retained evidence, follow-ups, keyboard controls and
+  layout. No live Gemini, CAPTCHA, hosted memory or physical touch-device check ran.
+- `docker build -t agenticrag-ux-phase3-check:local .` — passed with cached
+  dependencies and the existing keyword-casing warning. Network-disabled
+  `python -m pip check` in that image reported no broken requirements; an
+  additional container smoke check built the execution UI and confirmed an API
+  failure produces an Unavailable verdict. SQL/dependencies were unchanged, so
+  database checks were not repeated. No push or cloud deployment was performed.
+- **Next: Phase 4, item 21 — complete first-time visitor journey validation.**

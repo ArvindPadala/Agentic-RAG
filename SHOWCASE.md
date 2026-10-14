@@ -70,6 +70,19 @@ are evicted. Source access changes can restart the research context. New answers
 are withheld if retrieved sources lose access during the request. Source details are
 session-local and are cleared on conversation/session changes.
 
+During research, the status area shows actual processing stages; queued requests
+use Gradio's queue indicator. **Latest research request — execution details**
+shows optimized search queries (or fallback), search/generation counts, retrieved
+and cited counts, and measured timings. Timings exclude queue waiting; parallel
+search durations can overlap. Router retries and token/cost totals are not inferred.
+
+The optional automated grounding check reports **Not run**, **Completed**,
+**Flagged**, or **Unavailable**. A service or response-format failure is not a
+passing verdict. Completed means the automated judge did not flag the answer
+against this turn's retrieved context; it is not a correctness guarantee.
+The **How this works** tab separates earlier FEMA-corpus benchmarks from IPCC
+retrieval smoke checks and current-request observations.
+
 1. **Cross-report synthesis — Query Decomposition**
    Compare climate risks at 1.5°C and 2°C with emissions pathways limiting warming
    to 1.5°C. Require separate citations and preserved uncertainty language.
