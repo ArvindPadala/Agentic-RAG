@@ -14,3 +14,4 @@ represent tracked-file deletions. Batch B deletions are recorded directly in Git
 | `__pycache__/` | Root Python bytecode cache; recreated on ordinary imports |
 | `tests/__pycache__/` | Test bytecode cache; recreated on ordinary imports |
 | `utils/__pycache__/` | Helper bytecode cache; recreated on ordinary imports |
+| `eval/__pycache__/` | Evaluation bytecode cache; recreated on ordinary imports |
