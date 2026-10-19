@@ -17,3 +17,4 @@ represent tracked-file deletions. Batch B deletions are recorded directly in Git
 | `eval/__pycache__/` | Evaluation bytecode cache; recreated on ordinary imports |
 | `.pytest_cache/` | Previous test-run cache; tests can run without it |
 | `.DS_Store` | macOS directory metadata; no application use |
+| `ade_lambda.zip` | Generated Lambda bundle; recreate through notebook packaging before deployment |
