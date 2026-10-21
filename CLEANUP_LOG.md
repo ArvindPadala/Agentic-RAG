@@ -18,3 +18,21 @@ represent tracked-file deletions. Batch B deletions are recorded directly in Git
 | `.pytest_cache/` | Previous test-run cache; tests can run without it |
 | `.DS_Store` | macOS directory metadata; no application use |
 | `ade_lambda.zip` | Generated Lambda bundle; recreate through notebook packaging before deployment |
+
+## Batches C and D — subsequent approved cleanup
+
+The user subsequently approved deleting all 16 Batch C files and the Batch D
+screenshot, with one commit after each deletion. Batch C's database, ten older
+PDFs and five historical evaluation outputs are recorded as individual Git
+deletions. No external archive was created; tracked files remain in Git history.
+
+| Local target removed | Reason |
+|---|---|
+| `images/gradio_ui.png` | Untracked, unreferenced screenshot; removal recorded here |
+
+The legacy notebook now requires user-supplied PDFs in its local `documents/`
+input directory. Evaluation scripts, requirements and `eval/golden_dataset.csv`
+are retained. Regenerate answer/result files before running Ragas, and ensure
+the evaluation dataset matches the indexed corpus. The retained historical
+golden dataset is not a new IPCC benchmark. Existing published metric values
+remain historical; this cleanup does not rerun or validate those measurements.
