@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "name": "IPCC AR6 showcase development benchmark v1",
+  "parser_version": "pymupdf-blocks-v1",
+  "annotation_method": "Source-qualified quotes and one-based PDF file pages checked against the pinned extracted PDFs. Development set selected before running retrieval; witnesses are not exhaustive relevance judgments. Unsupported cases are answer-review tests, not negative retrieval labels.",
+  "source_sha256": {
+    "ipcc-ar6-synthesis-spm": "3e347d04913c8fcc180c10efec372681554f3d735a7f0b2e6c7d991ddbb29c11",
+    "ipcc-ar6-physical-science-spm": "11bdea78a8589072d10dba518839f8d5c3d42c90fbeab859bd23cc915266f7b9",
+    "ipcc-ar6-mitigation-spm": "fdec68c55cbf64ddf2d65c468f9125c1111413fcc35aa01c94810e4548e6c778"
+  },
+  "cases": [
+    {
+      "id": "human-influence",
+      "kind": "supported",
+      "question": "What does the 2021 IPCC Physical Science Basis summary conclude about human influence on the atmosphere, ocean and land? Preserve its certainty language.",
+      "review_guidance": "Attribute to WGI 2021 A.1, PDF page 8. Unequivocal human influence on warming of atmosphere, ocean and land; do not soften this into a speculative claim.",
+      "evidence": [{"source_id": "ipcc-ar6-physical-science-spm", "pdf_page": 8, "quote": "It is unequivocal that human influence has warmed the atmosphere, ocean and land."}]
+    },
+    {
+      "id": "observed-warming",
+      "kind": "supported",
+      "question": "According to the 2023 IPCC Synthesis summary, how much higher was global surface temperature in 2011-2020 than in 1850-1900, and what principally caused the warming?",
+      "review_guidance": "SYR 2023 A.1, PDF page 10: 1.1°C above 1850-1900 in 2011-2020; human activities, principally greenhouse gas emissions. Do not present this as today's temperature or a city-level projection.",
+      "evidence": [{"source_id": "ipcc-ar6-synthesis-spm", "pdf_page": 10, "quote": "global surface temperature reaching 1.1°C above 1850-1900 in 2011-2020"}]
+    },
+    {
+      "id": "technology-costs",
+      "kind": "supported",
+      "question": "In the 2022 Mitigation summary, how much did unit costs of solar energy, wind energy and lithium-ion batteries fall from 2010 to 2019?",
+      "review_guidance": "WGIII 2022 B.4.1, PDF page 15: solar 85%, wind 55%, batteries 85%, specifically 2010-2019. These are historical unit-cost reductions, not current installed prices.",
+      "evidence": [{"source_id": "ipcc-ar6-mitigation-spm", "pdf_page": 15, "quote": "unit costs of solar energy (85%), wind energy (55%), and lithium-ion batteries (85%)"}]
+    },
+    {
+      "id": "demand-side",
+      "kind": "supported",
+      "question": "What reduction in global end-use-sector greenhouse gas emissions could demand-side measures enable by 2050, compared with baseline scenarios, according to the 2022 Mitigation summary? Include its distributional caveat.",
+      "review_guidance": "WGIII 2022 C.10, PDF page 38: 40-70% by 2050 versus baseline scenarios; some regions and socioeconomic groups need additional energy and resources. High confidence; do not equate this with an economy-wide guaranteed reduction.",
+      "evidence": [{"source_id": "ipcc-ar6-mitigation-spm", "pdf_page": 38, "quote": "reduce global GHG emissions in end-use sectors by 40–70% by 2050 compared to baseline scenarios"}]
+    },
+    {
+      "id": "pathway-reductions",
+      "kind": "supported",
+      "question": "According to the 2022 Mitigation summary, compare 2030 global GHG reductions relative to 2019 in pathways limiting warming to 1.5°C with no or limited overshoot versus 2°C with immediate action. Preserve probabilities and ranges.",
+      "review_guidance": "WGIII 2022 C.1.1, PDF page 21: 43% [34-60%] for 1.5°C (>50%) no/limited overshoot; 27% [13-45%] for 2°C (>67%) with immediate action; modeled pathways, high confidence, 2019 baseline.",
+      "evidence": [{"source_id": "ipcc-ar6-mitigation-spm", "pdf_page": 21, "quote": "This compares with reductions of 43% [34–60%] by 2030"}]
+    },
+    {
+      "id": "observed-sea-level",
+      "kind": "supported",
+      "question": "How much did global mean sea level rise between 1901 and 2018, and how did its average rate change between 1901-1971 and 2006-2018 in the 2021 Physical Science summary?",
+      "review_guidance": "WGI 2021 A.1.7, PDF page 9: 0.20 [0.15-0.25] m; 1.3 [0.6-2.1] mm/year increasing to 3.7 [3.2-4.2] mm/year, high confidence. Human influence very likely main driver since at least 1971; preserve periods and uncertainty.",
+      "evidence": [{"source_id": "ipcc-ar6-physical-science-spm", "pdf_page": 9, "quote": "Global mean sea level increased by 0.20 [0.15 to 0.25] m between 1901 and 2018."}]
+    },
+    {
+      "id": "hot-extremes",
+      "kind": "supported",
+      "question": "What does the 2021 Physical Science summary say about changes in hot extremes and cold extremes over most land regions since the 1950s, and their main driver?",
+      "review_guidance": "WGI 2021 A.3.1, PDF page 12: virtually certain hot extremes more frequent/intense, cold extremes less frequent/severe; high confidence human-induced climate change main driver. Do not claim every location or event follows the same pattern.",
+      "evidence": [{"source_id": "ipcc-ar6-physical-science-spm", "pdf_page": 12, "quote": "hot extremes (including heatwaves) have become more frequent and more intense across most land regions since the 1950s"}]
+    },
+    {
+      "id": "net-zero-requirement",
+      "kind": "supported",
+      "question": "From the physical-science perspective in the 2023 Synthesis summary, what is required to limit human-caused global warming to a specific level?",
+      "review_guidance": "SYR 2023 B.5.1, PDF page 25: limit cumulative CO2, reach at least net-zero CO2 and strongly reduce other GHGs. Distinguish net-zero CO2 from net-zero GHG; do not imply net-zero CO2 immediately reverses all climate impacts.",
+      "evidence": [{"source_id": "ipcc-ar6-synthesis-spm", "pdf_page": 25, "quote": "requires limiting cumulative CO2 emissions, reaching at least net zero CO2 emissions"}]
+    },
+    {
+      "id": "cross-report-warming",
+      "kind": "cross_report",
+      "question": "Compare the 2021 Physical Science estimate of human-caused warming in 2010-2019 with the 2023 Synthesis statement on observed warming in 2011-2020, both relative to 1850-1900. Why should these values not be treated as an exact like-for-like trend? Cite both reports.",
+      "review_guidance": "WGI 2021 PDF page 9 gives human-caused warming best estimate 1.07°C, likely 0.8-1.3°C for 2010-2019. SYR 2023 PDF page 10 gives observed 1.1°C for 2011-2020. Distinct quantities/periods, not proof of a precise 0.03°C trend; cite both reports.",
+      "evidence": [
+        {"source_id": "ipcc-ar6-physical-science-spm", "pdf_page": 9, "quote": "0.8°C to 1.3°C, with a best estimate of 1.07°C"},
+        {"source_id": "ipcc-ar6-synthesis-spm", "pdf_page": 10, "quote": "global surface temperature reaching 1.1°C above 1850-1900 in 2011-2020"}
+      ]
+    },
+    {
+      "id": "cross-report-costs",
+      "kind": "cross_report",
+      "question": "Compare the historical solar, wind and lithium-ion battery unit-cost reductions reported in the 2022 Mitigation summary and the 2023 Synthesis summary. Do the periods and percentages agree, and do they establish current installed prices? Cite both reports.",
+      "review_guidance": "WGIII 2022 PDF page 15 and SYR 2023 PDF page 17 both give 2010-2019 reductions: solar 85%, wind 55%, batteries 85%. Historical reductions agree; they do not establish current local installed prices. Cite both source identities.",
+      "evidence": [
+        {"source_id": "ipcc-ar6-mitigation-spm", "pdf_page": 15, "quote": "unit costs of solar energy (85%), wind energy (55%), and lithium-ion batteries (85%)"},
+        {"source_id": "ipcc-ar6-synthesis-spm", "pdf_page": 17, "quote": "unit costs of solar energy (85%), wind energy (55%), and lithium-ion batteries (85%)"}
+      ]
+    },
+    {
+      "id": "unsupported-city-date",
+      "kind": "unsupported",
+      "question": "According to these IPCC reports, what exact temperature in degrees Celsius will Hyderabad record on 1 January 2035?",
+      "review_guidance": "Explain that these assessment summaries do not establish an exact city/day weather prediction. Do not supply a fabricated temperature or imply a successful grounding check unless one actually ran. Nearby warming evidence is not an answer to this question.",
+      "evidence": []
+    },
+    {
+      "id": "unsupported-current-price",
+      "kind": "unsupported",
+      "question": "Using only these IPCC assessment summaries, what is the exact installed price in rupees of a rooftop solar system in Hyderabad today?",
+      "review_guidance": "State the source/time/local-price gap and do not invent a price. Historical global unit-cost reductions do not establish today's local installed cost. Do not suggest unavailable public uploads.",
+      "evidence": []
+    }
+  ]
+}

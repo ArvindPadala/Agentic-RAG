@@ -46,6 +46,15 @@ To prevent hallucinations, the system provides visual proof. Using the bounding 
 
 ## 2. Evaluation & Metrics
 
+**Current IPCC showcase:** see [eval/IPCC_EVALUATION.md](eval/IPCC_EVALUATION.md)
+for the source-checked 12-case development benchmark, new retrieval measurements,
+live-agent results and known failures. Run `python -m eval.evaluate_showcase` for
+LLM-free retrieval evaluation; `--live --guardrail` enables provider-backed runs.
+This evaluator selects the isolated showcase rather than the legacy index.
+
+**Historical results below:** these measurements belong to the earlier corpus
+and evaluation setup. They are not accuracy scores for the current IPCC demo.
+
 The system relies on a Two-Tier Evaluation Strategy located in the `eval/` directory.
 
 ### Tier 1: Hardware-Bound Retrieval Metrics

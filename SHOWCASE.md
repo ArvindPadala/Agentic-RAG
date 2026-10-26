@@ -87,6 +87,12 @@ See [UX_VALIDATION.md](UX_VALIDATION.md) for the complete synthetic visitor-jour
 checks, memory/isolation and recovery coverage, exact verification commands, and
 the hosted/live checks that remain pending.
 
+For the fresh source-checked development benchmark and actual local retrieval/
+live-agent results, see [eval/IPCC_EVALUATION.md](eval/IPCC_EVALUATION.md).
+`python -m eval.evaluate_showcase` runs retrieval comparisons against this exact
+showcase. Add `--live --guardrail` for provider-backed evaluation; use `--case`
+to select unfinished cases when continuing an interrupted run.
+
 1. **Cross-report synthesis — Query Decomposition**
    Compare climate risks at 1.5°C and 2°C with emissions pathways limiting warming
    to 1.5°C. Require separate citations and preserved uncertainty language.

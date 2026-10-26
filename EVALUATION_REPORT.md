@@ -1,5 +1,9 @@
 # 📊 RAG Evaluation Report: Two-Tier Methodology
 
+> **Historical corpus results.** This report predates the IPCC showcase. Its
+> generated result files were retired during approved cleanup. For the new
+> IPCC benchmark and measured results, see [eval/IPCC_EVALUATION.md](eval/IPCC_EVALUATION.md).
+
 To rigorously test new **Elite Hybrid Search (BM25 + Vector + RRF + Cross-Encoder Reranker)** pipeline against the legacy Baseline Vector Search, I generated a challenging "Golden Dataset" of nearly 100 complex questions using uploaded FEMA documents and existing data.
 
 Because full end-to-end LLM-as-a-judge pipelines like `ragas` are notoriously fragile under API rate limits (Gemini Free Tier) and incredibly slow on local hardware (Ollama), I engineered a **Two-Tier Evaluation Strategy** to get statistically significant metrics without burning out my compute budget.

@@ -3,6 +3,9 @@
 chroma_db/
 showcase_data/
 
+# Regenerated evaluation artifacts; benchmark definitions remain tracked.
+eval/results/
+
 # Lambda deployment zip — rebuilt by Step 3. 7MB binary, not useful in git
 ade_lambda.zip
 

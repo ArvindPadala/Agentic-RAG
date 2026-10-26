@@ -104,3 +104,65 @@ dependency. Screenshots and disposable browser profiles stay outside the reposit
 These checks are **pending**, not passing. The local checklist completion is not
 a hosted production-readiness claim. No push, cloud deployment, live CAPTCHA,
 live Supabase mutation or live inference was performed during this validation.
+
+## Hosted artifact audit — 2026-10-19
+
+**NOT READY TO SHIP:** the public Space is serving a different, older source
+revision and contains legacy data artifacts. Current-release live validation is
+blocked until the intended revision and artifact inventory are resolved.
+
+### Read-only checks actually executed
+
+Python `urllib.request` GETs queried these Hugging Face endpoints without loading
+workspace credentials or sending an authentication token:
+
+- `/api/spaces/ArvindPadala/Agentic-Document-RAG`
+- `/api/spaces/ArvindPadala/Agentic-Document-RAG/tree/00901a663d00d7b6a365b5a6bf846139f59b96bd?recursive=true&limit=1000`
+- `/spaces/ArvindPadala/Agentic-Document-RAG/resolve/00901a663d00d7b6a365b5a6bf846139f59b96bd/app.py`
+
+Results:
+
+- Public repository; SDK `gradio`; runtime reported `SLEEPING`, requested
+  hardware `zero-a10g`. This is metadata, not a successful application request.
+- Hosted repository revision: `00901a663d00d7b6a365b5a6bf846139f59b96bd`.
+  Local latest application commit: `ddde2a1` (Phase 4).
+- Recursive inventory returned 73 files with no pagination link. Comparing
+  against `deploy.SPACE_SOURCE_FILES` plus `.gitattributes`, `Dockerfile`, and
+  `.dockerignore` identified 56 unexpected files. Unexpected does not itself
+  mean private: these also include development and documentation files.
+- Metadata identified 10 PDFs, two SQLite databases, and five files under
+  `chroma_db/`. The broad potential-data classifier (known data directories,
+  exact legacy memory/environment paths, PDF/SQLite/archive/Parquet extensions)
+  matched 17 files totaling 13,737,896 bytes. These counts overlap.
+- No exact root `.env` or `memory.json` entry appeared; `.env.example` did.
+  This is not a complete secret scan or an audit of repository history.
+- Expected current runtime modules including `access_control.py`,
+  `private_sessions.py`, `supabase_backend.py`, `evidence.py`, `execution.py`, and
+  `showcase_corpus.py` were absent from the inventory.
+- Hosted `app.py` SHA-256:
+  `dc14db9721c3679fc25918fd12db7bf72b74f31086ad1dae4550e87c7f6eec78`.
+  Its source lacked the current `settings.ACCESS_POLICY`, `PrivateSessions`,
+  `EvidenceCollector`, `SHOWCASE_ENABLED`, and `max_file_size=0` markers.
+
+### Finding and next action
+
+**P0 — public legacy data artifacts and outdated privacy controls.** Public,
+unauthenticated metadata confirms the data artifacts are in the hosted repository;
+the hosted application source does not contain the current controls. Document
+sensitivity and data contents were not inspected. Runtime sleeping does not
+establish repository confidentiality. `deploy.py:24-31` only uploads its source
+allowlist and explicitly does not remove existing artifacts.
+
+Resolve the inventory before release: confirm which artifacts are approved for
+public distribution, remove unapproved data, and address historical revisions
+where necessary. If private material is involved, restricting repository access
+is an immediate containment option. Obtain operator approval before visibility
+changes, remote deletion/history changes, or deployment. Deploy the intended
+source revision and provision only the approved showcase, then repeat the audit
+and the HTTPS/provider/two-browser checklist above.
+
+Potentially private filenames are omitted from this report. PDF/database
+contents, credentials, and personal memory were not read. No remote
+files/settings were changed.
+No application wake-up, live inference, CAPTCHA/Auth mutation, browser flow,
+physical-device check, or hosted runtime success is claimed by this audit.
