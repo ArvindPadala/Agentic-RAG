@@ -1831,4 +1831,25 @@ Recorded: 2026-10-25 local / 2026-10-26 UTC
   eval/IPCC_EVALUATION.md. Final tests: 123 passed, 40 warnings; configured lint: 0.
   No browser/Auth/SQL/Docker checks, HF changes, dependency updates or new commits.
 
+14. GROUPED CITATION PARSING FOLLOW-UP
+=======================================
+
+- Fixed the baseline P1 source-navigation defect: positive-integer comma groups
+  become separately validated numeric source links; mixed unknown members do not
+  discard valid sources. Model-selected link destinations are not accepted.
+- Citation candidate IDs now come from one shared parser for UI formatting and
+  evaluation metrics. Decimal/signed/percentage values, zero-based lists and dash
+  ranges are excluded from grouped-citation syntax. Bare positive integer lists
+  remain inherently ambiguous and are reserved as reference syntax.
+- Added a saved-report citation replay option with explicit snapshot-only
+  authorization semantics. Replayed only pathway-reductions and unsupported-city-date:
+  all grouped IDs resolved, and the latter gained cited IDs 1, 4 and 6. Original
+  saved reports and live evaluation measurements were not rewritten or regenerated.
+- Final verification: 138 pytest tests passed (41 dependency/fixture warnings),
+  configured lint reported 0 issues, and diff whitespace checks passed. No new
+  provider, browser/Auth, SQL, Docker or hosted deployment checks were performed.
+- Exact commands, behavior limits and results are in the grouped-citation
+  follow-up section of eval/IPCC_EVALUATION.md. Response truncation/finish-reason
+  handling and provider deadlines/retry budgets remain the next reliability tasks.
+
 END OF CONSOLIDATED REVIEW

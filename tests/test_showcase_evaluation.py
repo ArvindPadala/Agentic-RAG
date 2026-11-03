@@ -67,7 +67,11 @@ def test_retrieval_failure_stays_in_aggregate_denominator_and_empty_modes_are_nu
     assert summary["hybrid"]["mean_annotated_group_coverage_at_5"] is None
 
 
-def test_live_evaluation_uses_actual_agent_and_only_counts_authorized_citation_ids():
+@pytest.mark.parametrize("answer", [
+    "Human influence warmed the climate [1]. Invented reference [999]. Group [1, 999].",
+    "Human influence warmed the climate [1, 999].",
+])
+def test_live_evaluation_uses_actual_agent_and_only_counts_authorized_citation_ids(answer):
     case = benchmark()["cases"][0]
     source_key = "showcase/hash/fixture.pdf"
     result = {"chunk_id": "fixture", "source_document": "Fixture report", "score": 1.0,
@@ -80,14 +84,15 @@ def test_live_evaluation_uses_actual_agent_and_only_counts_authorized_citation_i
         types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
             role="model", parts=[types.Part.from_function_call(name="search_knowledge_base", args={"query": "human"})]))]),
         types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
-            role="model", parts=[types.Part(text="Human influence warmed the climate [1]. Invented reference [999]. Group [1, 999].")]))]),
+            role="model", parts=[types.Part(text=answer)]))]),
     ]
     with patch("llm_router.GeminiRouter", return_value=router), patch("agent.search_chroma", return_value=[result]):
         row = live_case(case, collection, [{"fixture"}], "fixture-model", "vector", False)
     assert row["status"] == "completed"
     assert row["cited_ids"] == [1]
     assert row["invalid_citation_ids"] == [999]
-    assert row["unparsed_grouped_citations"] == ["[1, 999]"]
+    assert row["unparsed_grouped_citations"] == []
+    assert "[[1]](#citation-1), [source unavailable]" in row["rendered_answer"]
     assert row["citation_id_precision"] == 0.5
     assert row["cited_evidence_score"]["annotated_group_coverage"] == 1
     assert row["execution"]["searches"] == 1
@@ -123,3 +128,24 @@ def test_cli_saves_failure_and_stops_before_next_live_case(tmp_path, monkeypatch
     assert report["live"][0]["case_id"] == selected[0]["id"]
     assert live.call_count == 1
     assert "secret provider" not in output.read_text()
+
+
+def test_saved_citation_replay_selects_cases_without_modifying_the_baseline(tmp_path, capsys):
+    from eval.evaluate_showcase import review_report
+
+    report = {"run_status": "running", "retrieval_summary": {}, "live": [
+        {"case_id": "affected", "status": "completed", "answer": "Claim [1, 99].",
+         "cited_ids": [], "evidence": [{"number": 1, "title": "Public report", "pdf_page": 8}]},
+        {"case_id": "other", "status": "completed", "answer": "Unselected answer sentinel."},
+    ]}
+    path = tmp_path / "baseline.json"
+    original = json.dumps(report)
+    path.write_text(original)
+    review_report(path, case_ids=["affected"], recheck_citations=True)
+    output = capsys.readouterr().out
+    assert "[[1]](#citation-1), [source unavailable]" in output
+    assert '"newly_linked_ids": [1]' in output
+    assert '"invalid_ids": [99]' in output
+    assert "current authorization is NOT checked" in output
+    assert "Unselected answer sentinel" not in output
+    assert path.read_text() == original

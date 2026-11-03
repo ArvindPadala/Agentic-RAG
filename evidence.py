@@ -12,7 +12,21 @@ MAX_PASSAGES_PER_TURN = 35
 MAX_RETAINED_PASSAGES = 120
 MAX_RETAINED_TURNS = 12
 MAX_EXCERPT_CHARS = 2000
-CITATION_RE = re.compile(r"(?<!!)\[(?:\[(\d{1,9})\]|(\d{1,9}))\](?:\([^\n)]*\))?")
+# Positive-integer comma lists are reserved for reference groups. Do not expand
+# ranges, decimals, percentages, signed values or zero-based numerical lists.
+_REFERENCE_IDS = r"(?:[1-9][0-9]{0,8}(?:[ \t]*,[ \t]*[1-9][0-9]{0,8})+|[0-9]{1,9})"
+CITATION_RE = re.compile(
+    rf"(?<!!)(?<!\\)(?<!\[)\[(?:\[({_REFERENCE_IDS})\]|({_REFERENCE_IDS}))\](?!\])(?:\([^\n)]*\))?")
+
+
+def _match_citation_numbers(match):
+    # Preserve the author's order, without repeating a link inside one group.
+    return tuple(dict.fromkeys(int(value.strip()) for value in (match.group(1) or match.group(2)).split(",")))
+
+
+def citation_numbers(text):
+    """Return candidate reference IDs using the same grammar as the renderer."""
+    return frozenset(number for match in CITATION_RE.finditer(text) for number in _match_citation_numbers(match))
 
 
 def original_pdf_url(url):
@@ -93,19 +107,25 @@ def format_citations(text, records):
     """Resolve only captured numeric IDs; unknown IDs never become valid links.
 
     Existence is provenance, not a claim-level correctness/faithfulness verdict.
-    A linked [N] from model prose cannot supply its own destination.
+    A linked [N] or [N, M] from model prose cannot supply its own destination.
+    Group members are validated independently; one unknown ID cannot discard
+    the valid members. Decimal values and dash-delimited ranges are not citations;
+    bare positive-integer comma lists are reserved for reference syntax.
     """
     known = {record.number for record in records}
     cited = set()
     invalid = set()
 
     def replace(match):
-        number = int(match.group(1) or match.group(2))
-        if number not in known:
-            invalid.add(number)
-            return "[source unavailable]"
-        cited.add(number)
-        return f"[[{number}]](#citation-{number})"
+        links = []
+        for number in _match_citation_numbers(match):
+            if number not in known:
+                invalid.add(number)
+                links.append("[source unavailable]")
+            else:
+                cited.add(number)
+                links.append(f"[[{number}]](#citation-{number})")
+        return ", ".join(links)
 
     rendered = CITATION_RE.sub(replace, text)
     if invalid:

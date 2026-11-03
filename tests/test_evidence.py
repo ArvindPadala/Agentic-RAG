@@ -17,7 +17,7 @@ from app import build_ui, make_chat_fn
 from evidence import (
     EvidenceCollector, EvidenceHistory, EvidenceTurn, MAX_RETAINED_TURNS,
     MAX_PASSAGES_PER_TURN, MAX_RETAINED_PASSAGES,
-    authorized_passages, format_citations, render_cards,
+    authorized_passages, citation_numbers, format_citations, render_cards,
 )
 from tests.test_runtime_privacy import collection  # noqa: F401 - real scoped Chroma fixture
 from tests.test_supabase_memory import B, ORIGIN, sessions, snapshot
@@ -80,6 +80,60 @@ def test_only_captured_refs_become_links_and_model_cannot_choose_destinations():
     assert "[99]" not in text
     assert "source unavailable" in text
     assert cited == {1}
+
+
+@pytest.mark.parametrize("reference", [
+    "[1, 4]", "[[1, 4]]", "[1,4](https://evil.invalid)",
+    "[[1,4]](https://evil.invalid)", "[1, 1,\t4]",
+])
+def test_grouped_refs_link_each_captured_member_without_repeating_it(reference):
+    collector = EvidenceCollector()
+    records = [collector.add(result(str(index))) for index in range(4)]
+    text, cited = format_citations(f"Claim {reference}.", records)
+    assert text == "Claim [[1]](#citation-1), [[4]](#citation-4)."
+    assert cited == citation_numbers(reference) == {1, 4}
+    assert format_citations(text, records) == (text, cited)
+
+
+def test_unknown_group_member_does_not_discard_valid_sources_or_choose_a_destination():
+    collector = EvidenceCollector()
+    records = [collector.add(result(str(index))) for index in range(4)]
+    raw = "Claim [1, 99, 4](https://evil.invalid). Another [98, 99]."
+    text, cited = format_citations(raw, records)
+    assert "[[1]](#citation-1), [source unavailable], [[4]](#citation-4)" in text
+    assert cited == {1, 4}
+    assert citation_numbers(raw) == {1, 4, 98, 99}
+    assert "evil.invalid" not in text
+    assert "#citation-99" not in text
+    assert text.count("Some source references") == 1
+
+
+@pytest.mark.parametrize("text", [
+    "Range [34–60%] and [1-4] and [1–4].",
+    "Bounds [0.95, 1.20] and [1.0, 4.0].",
+    "Signed [-1, 4] and [+1, 4]; probability [0, 1].",
+    "Percentages [1%, 4%]; a mixed list [1, 4.5].",
+    r"Escaped \[1, 4] and image ![1,4](https://example.invalid/image.png).",
+    "Nested image ![[1,4]](https://example.invalid/image.png).",
+])
+def test_scientific_values_ranges_and_nonreference_markdown_are_unchanged(text):
+    collector = EvidenceCollector()
+    records = [collector.add(result(str(index))) for index in range(4)]
+    assert format_citations(text, records) == (text, frozenset())
+    assert citation_numbers(text) == frozenset()
+
+
+def test_web_turn_publishes_valid_group_members_in_the_cited_evidence_state(collection):
+    chat = make_chat_fn(None, {}, "unused.json", None, collection, None, return_evidence=True)
+
+    def answer(**kwargs):
+        kwargs["tool_map"]["search_knowledge_base"]("showcase")
+        return "Supported claim [1, 99]."
+
+    with patch("app.run_agent_turn", side_effect=answer):
+        output = chat("Question", [], [], "Standard Vector Search", False, False)
+    assert "[[1]](#citation-1), [source unavailable]" in output[0][-1]["content"]
+    assert output[5].cited == {1}
 
 
 def test_cards_distinguish_retrieved_from_cited_and_escape_content():

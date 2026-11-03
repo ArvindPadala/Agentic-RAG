@@ -98,8 +98,9 @@ not an answer-correctness score. It is different from single-query retrieval.
 Ten completed answers contained recognized individual numeric references, all
 resolving to captured evidence; no invalid **recognized** IDs were observed.
 This excludes unparsed groups such as `[1, 4]`. It does not measure whether every
-claim is cited or entailed. The evaluator now explicitly flags grouped references
-in new runs and can detect them when reviewing existing saved reports.
+claim is cited or entailed. At baseline, the evaluator flagged these groups as
+unparsed. The grouped-citation follow-up below changes the parser and future
+evaluation accounting; the original measurements remain unchanged.
 
 ### Interrupted batch and continuation
 
@@ -122,8 +123,8 @@ CPU/GPU or capacity claim inappropriate.
    answers use grouped references, so source navigation can be missing despite
    apparently cited prose. Normalize/validate each group member without accepting
    model-provided destinations, and regression-test unknown members and numeric
-   scientific ranges. This evaluation change detects the issue; it does not fix
-   the application formatter.
+   scientific ranges. The application formatter was subsequently fixed in the
+   grouped-citation follow-up below.
 2. **P1 — answer completeness and quota/deadline handling.** The saved
    `cross-report-warming` answer stops at “from natural”, then gets a completed
    grounding footer. `agent.py:289-294,350-355,405-448` limits output but does not
@@ -207,3 +208,51 @@ calls, not a network sandbox. Live runs load operator credentials through existi
 configuration but never print them; public tracing is disabled and no private
 memory/Auth/AWS operation is invoked. There were no dependency updates, commits,
 HF uploads, live browser/Auth tests, Docker builds or SQL changes in this work.
+
+## Follow-up: grouped citation parsing fixed
+
+The UI formatter now expands `[1, 4]` and `[[1, 4]]` into separate captured-source
+links. It validates each member independently, retains valid members beside
+unknown ones, deduplicates members within a group, and discards model-supplied
+link destinations. Existing individual and already-rendered links remain usable.
+
+Decimal values, percentages, signed values, zero-based lists, dash ranges,
+escaped references and Markdown image labels are preserved. Bare comma-separated
+positive integer lists are reserved for citation syntax: their meaning cannot
+be distinguished reliably from arbitrary integer data by syntax alone.
+
+The evaluator shares `citation_numbers()` with the renderer, so groups contribute
+to citation metrics and cited-evidence coverage. New reports retain both raw and
+rendered answers; residual grouped-reference diagnostics inspect the rendered
+answer instead of flagging every raw group as broken.
+
+The two affected saved IPCC answers were replayed without generation:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python -m eval.evaluate_showcase \
+  --review-report eval/results/ipcc_full_pipeline.json --recheck-citations \
+  --case pathway-reductions --case unsupported-city-date
+```
+
+- `pathway-reductions`: `[1, 5]` becomes two valid source links; numerical ranges
+  such as `[34–60%]` remain unchanged. The same IDs were already cited elsewhere,
+  so the cited-ID set stays `{1, 2, 5}`.
+- `unsupported-city-date`: `[1, 4]` and `[1, 6]` become valid source links, with
+  newly recognized cited IDs `{1, 4, 6}` and no unknown IDs.
+
+This is **formatting replay against saved evidence**, not a recheck of current
+source authorization or a new grounding/answer-quality verdict. The saved
+baseline, live failure and original retrieval measurements were not modified.
+
+Verification after the fix:
+
+- `PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' make test`:
+  **138 passed**, 41 dependency/fixture warnings. Coverage includes the real web
+  callback's cited state, actual agent/evaluator flow, numerical non-citations,
+  model-controlled destinations and a non-mutating saved-report replay.
+- `PYTHONDONTWRITEBYTECODE=1 make lint`: **0 configured issues**.
+- `git diff --check`: passed.
+
+No new provider calls, browser runs, SQL checks, image builds or deployments were
+needed for this formatting follow-up. Incomplete-response and quota/deadline
+handling remain separate follow-up work.

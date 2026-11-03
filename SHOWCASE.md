@@ -57,7 +57,9 @@ memory are expandable. If reports are unavailable, research controls are paused;
 use **Explore reports → Recheck report availability** to retry without generating
 an answer. The backend enforces the same authorized-corpus check for direct calls.
 
-Answers now use clickable numbered references such as **[1]**. **Evidence by
+Answers now use clickable numbered references such as **[1]**. Groups such as
+**[1, 4]** become individual source links; unknown members do not invalidate the
+valid members. **Evidence by
 answer** retains source excerpts, report titles/dates and PDF page positions,
 including passages the model retrieved but did not cite. Select a reference or
 **View source page** to render its page; no model-generated image URL is needed.

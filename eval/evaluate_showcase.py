@@ -16,12 +16,13 @@ import re
 import subprocess
 import textwrap
 import time
+from types import SimpleNamespace
 import unicodedata
 
 
 DATASET = Path(__file__).with_name("ipcc_benchmark.json")
 MODES = ("vector", "hybrid", "reranked")
-GROUPED_REFERENCE_RE = re.compile(r"\[(?:\d+\s*,\s*)+\d+\]")
+GROUPED_REFERENCE_RE = re.compile(r"\[(?:[1-9][0-9]{0,8}[ \t]*,[ \t]*)+[1-9][0-9]{0,8}\]")
 
 
 def normalize(text):
@@ -144,7 +145,7 @@ def live_case(case, collection, groups, model, mode, guardrail):
     from agent import build_agent_config, build_search_tool, run_agent_turn
     from config import settings
     from access_control import RuntimePolicy
-    from evidence import CITATION_RE, EvidenceCollector, authorized_passages, format_citations
+    from evidence import EvidenceCollector, authorized_passages, citation_numbers, format_citations
     from execution import ExecutionTrace
     from llm_router import GeminiRouter
 
@@ -167,13 +168,13 @@ def live_case(case, collection, groups, model, mode, guardrail):
         allowed = authorized_passages(records, collection, policy)
         if len(allowed) != len(records):
             raise ValueError("Evidence authorization changed")
-        _, cited = format_citations(answer, allowed)
-        refs = {int(match.group(1) or match.group(2)) for match in CITATION_RE.finditer(answer)}
+        rendered_answer, cited = format_citations(answer, allowed)
+        refs = citation_numbers(answer)
         captured = [{"chunk_id": p.chunk_id} for p in allowed]
         cited_chunks = [{"chunk_id": p.chunk_id} for p in allowed if p.number in cited]
-        row.update(status="completed", answer=answer, cited_ids=sorted(cited),
+        row.update(status="completed", answer=answer, rendered_answer=rendered_answer, cited_ids=sorted(cited),
                    invalid_citation_ids=sorted(refs - set(cited)),
-                   unparsed_grouped_citations=GROUPED_REFERENCE_RE.findall(answer),
+                   unparsed_grouped_citations=GROUPED_REFERENCE_RE.findall(rendered_answer),
                    citation_id_precision=len(cited) / len(refs) if refs else None,
                    has_citations=bool(cited), captured_evidence_score=score_evidence(captured, groups),
                    cited_evidence_score=score_evidence(cited_chunks, groups),
@@ -206,24 +207,42 @@ def provenance(dataset_hash, collection):
             "embedding": "Chroma default all-MiniLM-L6-v2", "reranker": "ms-marco-MiniLM-L-6-v2 (CPU)"}
 
 
-def review_report(path):
+def review_report(path, *, case_ids=(), recheck_citations=False):
     """Render saved public-benchmark answers for review without rerunning inference."""
     report = json.loads(path.read_text())
+    if set(case_ids) - {row["case_id"] for row in report["live"]}:
+        raise ValueError("Requested case is not present in the saved live results")
     print(json.dumps({"run_status": report.get("run_status", "unknown"), "retrieval_summary": report["retrieval_summary"],
                       "live_cases_saved": len(report["live"])}, indent=2))
     for row in report["live"]:
+        if case_ids and row["case_id"] not in case_ids:
+            continue
         execution = row.get("execution", {})
         print(f"\n## {row['case_id']} — {row['status']}")
         print(json.dumps({key: row.get(key) for key in (
             "citation_id_precision", "invalid_citation_ids", "captured_evidence_score", "cited_evidence_score")}, indent=2))
-        print("Unparsed grouped references: " + json.dumps(GROUPED_REFERENCE_RE.findall(row.get("answer", ""))))
+        print("Raw grouped reference syntax (not necessarily invalid): "
+              + json.dumps(GROUPED_REFERENCE_RE.findall(row.get("answer", ""))))
         print(json.dumps({key: execution.get(key) for key in (
             "elapsed", "searches", "generation_calls", "decomposition", "grounding", "grounding_reason")}, indent=2))
-        for paragraph in row.get("answer", "").splitlines():
+        answer = row.get("answer", "")
+        cited_ids = row.get("cited_ids", [])
+        if recheck_citations:
+            from evidence import citation_numbers, format_citations
+
+            # Formatting replay only: these IDs were authorized at capture time.
+            # It must not imply that current source permissions were rechecked.
+            records = [SimpleNamespace(number=passage["number"]) for passage in row.get("evidence", [])]
+            answer, cited_ids = format_citations(answer, records)
+            print("Current-parser replay against saved evidence; current authorization is NOT checked.")
+            print(json.dumps({"cited_ids": sorted(cited_ids),
+                              "newly_linked_ids": sorted(set(cited_ids) - set(row.get("cited_ids", []))),
+                              "invalid_ids": sorted(citation_numbers(row.get("answer", "")) - set(cited_ids))}))
+        for paragraph in answer.splitlines():
             print(textwrap.fill(paragraph, width=100))
         print("Cited source pages:")
         for passage in row.get("evidence", []):
-            if passage["number"] in row.get("cited_ids", []):
+            if passage["number"] in cited_ids:
                 print(f"[{passage['number']}] {passage['title']} — PDF page {passage['pdf_page']}")
 
 
@@ -234,6 +253,8 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("eval/results/ipcc_evaluation.json"))
     parser.add_argument("--find", action="append", default=[], help="Inspect pinned public passages; no indexing/generation")
     parser.add_argument("--review-report", type=Path, help="Read a saved benchmark report without rerunning evaluation")
+    parser.add_argument("--recheck-citations", action="store_true",
+                        help="Replay current citation formatting against saved evidence (no authorization recheck)")
     parser.add_argument("--validate-only", action="store_true", help="Check source pins and quote witnesses without indexing")
     parser.add_argument("--live", action="store_true", help="Also call Gemini on selected cases; may consume quota")
     parser.add_argument("--case", action="append", default=[], help="Select case IDs; repeat for multiple cases")
@@ -244,8 +265,10 @@ def main():
     if args.review_report:
         if args.live or args.find or args.validate_only:
             parser.error("--review-report cannot be combined with execution modes")
-        review_report(args.review_report)
+        review_report(args.review_report, case_ids=args.case, recheck_citations=args.recheck_citations)
         return 0
+    if args.recheck_citations:
+        parser.error("--recheck-citations requires --review-report")
     if args.live and (args.find or args.validate_only):
         parser.error("--live cannot be combined with inspection/validation-only modes")
     if args.guardrail and not args.live:
