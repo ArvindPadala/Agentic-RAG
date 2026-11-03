@@ -1852,4 +1852,27 @@ Recorded: 2026-10-25 local / 2026-10-26 UTC
   follow-up section of eval/IPCC_EVALUATION.md. Response truncation/finish-reason
   handling and provider deadlines/retry budgets remain the next reliability tasks.
 
+15. PROVIDER COMPLETION AND HISTORY ROLLBACK FOLLOW-UP
+======================================================
+Recorded: 2026-11-02
+
+- Agent candidates must explicitly report STOP before their text/tool calls are
+  accepted. Output-limit, non-normal or missing finish reasons produce an
+  incomplete outcome; partial content is withheld and grounding is skipped.
+- Shared completion validation also rejects incomplete grounding/decomposition
+  JSON: grounding becomes unavailable, and decomposition uses its normal fallback.
+- Failed or interrupted graph turns roll back the new history slice, including
+  CLI Ctrl-C before memory-on-exit. UI preserves prior context; evaluation stores
+  an incomplete case and finish-reason metadata rather than a completed answer.
+- Provider metadata is normalized and exceptions do not carry partial text.
+  STOP is not a semantic-completeness or correctness guarantee. The baseline's
+  mid-sentence response still has no recorded finish reason and was not rerun.
+- Final checks: 153 pytest tests passed (43 warnings), lint 0 configured issues,
+  diff whitespace check passed; real Chrome desktop/mobile-emulated synthetic
+  public research smoke passed. Normal STOP flow was browser-checked; incomplete
+  outcomes were exercised in deterministic real-graph/web-handler regressions.
+- Exact commands and limits are in eval/IPCC_EVALUATION.md. No new live provider,
+  Auth, SQL, Docker, dependency or hosted deployment operation was performed.
+  Provider deadline/retry budgets and rate-limit pacing remain the next work.
+
 END OF CONSOLIDATED REVIEW

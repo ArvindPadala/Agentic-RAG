@@ -50,7 +50,7 @@ from supabase_backend import SupabaseBackend, SupabaseError
 from private_sessions import PrivateSessions
 from evidence import (EvidenceCollector, EvidenceHistory, EvidenceTurn, EVIDENCE_CLICK_JS,
                       authorized_passages, format_citations, render_cards)
-from execution import ExecutionTrace, execution_status, render_execution
+from execution import ExecutionTrace, IncompleteResponseError, execution_status, render_execution
 
 logger = get_logger("app")
 
@@ -403,7 +403,13 @@ def make_chat_fn(gemini_client, memory, memory_file,
             )
             elapsed_time = time.time() - start_time
         except Exception as e:
-            if is_rate_limit_error(e):
+            if isinstance(e, IncompleteResponseError):
+                if execution:
+                    execution.set_finish_reason(e.finish_reason)
+                    execution.finish("incomplete")
+                error_msg = ("**The model response was incomplete.** " + str(e)
+                             + " Your previous completed context was preserved; no partial answer was saved.")
+            elif is_rate_limit_error(e):
                 if execution:
                     execution.finish("rate_limited")
                 error_msg = (

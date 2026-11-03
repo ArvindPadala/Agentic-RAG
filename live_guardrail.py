@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from google.genai import types as genai_types
 from llm_router import GeminiRouter
 from utils.logger import get_logger
+from execution import require_complete_response
 
 logger = get_logger("live_guardrail")
 
@@ -74,6 +75,7 @@ def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: Ge
             config=config
         )
 
+        require_complete_response(response)
         result = json.loads(response.text)
         if (not isinstance(result, dict) or type(result.get("is_faithful")) is not bool
                 or not isinstance(result.get("reason"), str) or not result["reason"].strip()

@@ -234,6 +234,7 @@ def main():
 
         def response(text):
             return types.GenerateContentResponse(candidates=[types.Candidate(
+                finish_reason="STOP",
                 content=types.Content(role="model", parts=[types.Part(text=text)]))])
 
         planning = {"used": False}
@@ -261,7 +262,7 @@ def main():
                 return response(f"Synthetic answer for browser verification [{number}]. Invalid reference [999].")
             turns.append((planning["used"], False))
             planning["used"] = False
-            return types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
+            return types.GenerateContentResponse(candidates=[types.Candidate(finish_reason="STOP", content=types.Content(
                 role="model", parts=[types.Part(function_call=types.FunctionCall(
                     name="search_knowledge_base", args={"query": "synthetic climate query"}))]))])
 

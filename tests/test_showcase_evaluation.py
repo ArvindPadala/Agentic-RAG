@@ -81,9 +81,9 @@ def test_live_evaluation_uses_actual_agent_and_only_counts_authorized_citation_i
     collection.get.return_value = {"ids": ["fixture"], "metadatas": [{"source_pdf_key": source_key, "page": 0}]}
     router = MagicMock()
     router.models.generate_content.side_effect = [
-        types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
+        types.GenerateContentResponse(candidates=[types.Candidate(finish_reason="STOP", content=types.Content(
             role="model", parts=[types.Part.from_function_call(name="search_knowledge_base", args={"query": "human"})]))]),
-        types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
+        types.GenerateContentResponse(candidates=[types.Candidate(finish_reason="STOP", content=types.Content(
             role="model", parts=[types.Part(text=answer)]))]),
     ]
     with patch("llm_router.GeminiRouter", return_value=router), patch("agent.search_chroma", return_value=[result]):
@@ -103,6 +103,20 @@ def test_live_evaluation_uses_actual_agent_and_only_counts_authorized_citation_i
 def test_live_failures_redact_provider_messages():
     error = RuntimeError("private request payload or credential must not be serialized")
     assert error_details(error) == {"type": "RuntimeError", "code": None}
+
+
+def test_incomplete_agent_response_is_not_a_completed_evaluation_case():
+    router = MagicMock()
+    router.models.generate_content.return_value = types.GenerateContentResponse(candidates=[types.Candidate(
+        finish_reason="MAX_TOKENS", content=types.Content(role="model", parts=[types.Part(text="partial answer sentinel")]))])
+    with patch("llm_router.GeminiRouter", return_value=router):
+        row = live_case(benchmark()["cases"][0], MagicMock(), [{"fixture"}], "fixture-model", "vector", True)
+    assert row["status"] == "incomplete"
+    assert row["execution"]["finish_reason"] == "MAX_TOKENS"
+    assert row["execution"]["grounding"] == "not_run"
+    assert "answer" not in row
+    assert "partial answer sentinel" not in json.dumps(row)
+    assert router.models.generate_content.call_count == 1
 
 
 def test_cli_saves_failure_and_stops_before_next_live_case(tmp_path, monkeypatch):

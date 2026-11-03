@@ -82,6 +82,13 @@ The optional automated grounding check reports **Not run**, **Completed**,
 **Flagged**, or **Unavailable**. A service or response-format failure is not a
 passing verdict. Completed means the automated judge did not flag the answer
 against this turn's retrieved context; it is not a correctness guarantee.
+Provider responses must explicitly finish with `STOP` before their text or tool
+calls are accepted. Output-limit or otherwise unconfirmed responses are withheld,
+the request reports **Incomplete**, and previous completed context is preserved.
+No grounding call is made for an incomplete answer. A normally stopped answer
+with an incomplete grounding response instead reports the check **Unavailable**.
+Provider finish reason is shown in execution details; a normal stop does not
+guarantee that an answer is factually correct or semantically complete.
 The **How this works** tab separates earlier FEMA-corpus benchmarks from IPCC
 retrieval smoke checks and current-request observations.
 

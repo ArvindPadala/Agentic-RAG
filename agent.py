@@ -17,7 +17,7 @@ Prerequisites (already done if you ran the notebook):
 """
 
 import concurrent.futures
-from execution import ExecutionTrace
+from execution import ExecutionTrace, IncompleteResponseError, require_complete_response
 from typing import TypedDict, Any, List
 from langgraph.graph import StateGraph, START, END
 from langsmith import traceable
@@ -344,13 +344,21 @@ def build_agent_graph():
 
         execution = state["execution"]
         execution.generation_started()
+        execution.set_finish_reason("UNKNOWN")
         with execution.measure("generation", "Generating a response or next search"):
             response = gemini_client.models.generate_content(
                 model=model, contents=conversation_history, config=forced_config)
-        if not response.candidates or not response.candidates[0].content or not response.candidates[0].content.parts:
+        try:
+            candidate = require_complete_response(response)
+        except IncompleteResponseError as error:
+            execution.set_finish_reason(error.finish_reason)
+            raise
+        execution.set_finish_reason("STOP")
+        if (not candidate.content or not candidate.content.parts
+                or not any(part.function_call or (part.text and not part.thought)
+                           for part in candidate.content.parts)):
             raise RuntimeError("The provider returned no usable response")
 
-        candidate = response.candidates[0]
         conversation_history.append(candidate.content)
 
         return {"conversation_history": conversation_history,
@@ -410,7 +418,10 @@ def build_agent_graph():
         last_message = conversation_history[-1]
         final_text = "".join(
             p.text for p in last_message.parts if hasattr(
-                p, "text") and p.text)
+                p, "text") and p.text and not p.thought)
+
+        if not final_text.strip():
+            raise RuntimeError("The provider returned no usable response")
 
         if use_guardrail:
             from live_guardrail import check_faithfulness
@@ -534,7 +545,15 @@ def run_agent_turn(
         "turn_start": turn_start,
     }
 
-    final_state = COMPILED_AGENT_GRAPH.invoke(initial_state)
+    try:
+        final_state = COMPILED_AGENT_GRAPH.invoke(initial_state)
+    except BaseException as error:
+        # Covers shared CLI callers as well as the web wrapper's working copy:
+        # never retain a failed user/tool cycle or partial model turn.
+        # Keyboard interruption must roll back before CLI memory-on-exit runs.
+        del conversation_history[turn_start:]
+        execution.finish("incomplete" if isinstance(error, IncompleteResponseError) else "failed")
+        raise
 
     if not final_state.get("final_text"):
         fallback_text = "I'm sorry, I was unable to find a complete answer within the allowed number of searches."

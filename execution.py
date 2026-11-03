@@ -6,6 +6,41 @@ from threading import RLock
 import time
 
 
+_FINISH_REASONS = frozenset({
+    "STOP", "MAX_TOKENS", "SAFETY", "RECITATION", "LANGUAGE", "OTHER", "BLOCKLIST",
+    "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL", "UNEXPECTED_TOOL_CALL",
+    "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION", "IMAGE_OTHER",
+    "NO_IMAGE", "FINISH_REASON_UNSPECIFIED",
+})
+
+
+def _finish_reason(value):
+    value = getattr(value, "value", value)
+    return value if isinstance(value, str) and value in _FINISH_REASONS else "UNKNOWN"
+
+
+class IncompleteResponseError(RuntimeError):
+    """Safe completion metadata only; partial provider text is never attached."""
+
+    def __init__(self, finish_reason):
+        self.finish_reason = _finish_reason(finish_reason)
+        message = ("The model reached its output limit before finishing. Try a narrower question."
+                   if self.finish_reason == "MAX_TOKENS" else
+                   "The provider did not confirm a complete response. Please retry.")
+        super().__init__(message)
+
+
+def require_complete_response(response):
+    """Accept only the chosen candidate's explicit normal stop, before using it."""
+    if not response.candidates:
+        raise RuntimeError("The provider returned no usable response")
+    candidate = response.candidates[0]
+    reason = _finish_reason(getattr(candidate, "finish_reason", None))
+    if reason != "STOP":
+        raise IncompleteResponseError(reason)
+    return candidate
+
+
 class ExecutionTrace:
     def __init__(self, mode="", on_stage=None):
         self.mode = mode
@@ -17,6 +52,7 @@ class ExecutionTrace:
         self.timings = {}
         self.searches = 0
         self.generation_calls = 0
+        self.finish_reason = "not_run"
         self.search_errors = 0
         self.decomposition = "not_run"
         self.subqueries = []
@@ -61,6 +97,10 @@ class ExecutionTrace:
         with self._lock:
             self.generation_calls += 1
 
+    def set_finish_reason(self, reason):
+        with self._lock:
+            self.finish_reason = _finish_reason(reason)
+
     def set_decomposition(self, status, queries=()):
         with self._lock:
             self.decomposition = status
@@ -85,6 +125,7 @@ class ExecutionTrace:
                     "elapsed": self.elapsed if self.elapsed is not None else time.perf_counter() - self.started,
                     "stages": list(self.stages), "timings": dict(self.timings),
                     "searches": self.searches, "generation_calls": self.generation_calls,
+                    "finish_reason": self.finish_reason,
                     "search_errors": self.search_errors, "decomposition": self.decomposition,
                     "subqueries": list(self.subqueries), "grounding": self.grounding,
                     "grounding_reason": self.grounding_reason, "passages": self.passages,
@@ -101,6 +142,7 @@ def execution_status(summary):
         "rate_limited": "The provider rate/quota limit was reached. Retry later; the limit may be temporary or daily.",
         "overloaded": "The provider is temporarily overloaded. Wait a moment and retry.",
         "failed": "The request failed. Retry your question; the previous completed context was preserved.",
+        "incomplete": "The model response was incomplete and was not saved. Your previous completed context was preserved.",
         "withheld": "The answer was withheld because source access changed. Retry with the current reports.",
     }
     text = labels.get(summary["status"], "Research is in progress.")
@@ -118,6 +160,7 @@ def render_execution(summary):
              f"<p><strong>Retrieval:</strong> {escape(summary['mode'])}</p>",
              f"<p>Search calls: {summary['searches']} · Agent generation calls: {summary['generation_calls']} · "
              f"Search errors: {summary['search_errors']}</p>",
+             f"<p>Final agent provider finish reason: {escape(summary.get('finish_reason', 'not_recorded'))}</p>",
              f"<p>Retrieved passages: {summary['passages']} · Distinct source identities: {summary['sources']} · "
              f"Cited references: {summary['cited']}</p>",
              f"<p>Processing time: {summary['elapsed']:.2f}s (excluding time waiting in the Gradio queue).</p>",
@@ -135,5 +178,5 @@ def render_execution(summary):
         parts.append("<p><strong>Observed stages:</strong> " + " → ".join(escape(s) for s in summary["stages"]) + "</p>")
     parts.append("<p>Timings are cumulative operation durations and may overlap for parallel searches. "
                  "Agent generation calls exclude provider-router retries. No token/cost totals are inferred. "
-                 "A completed automated check is not a guarantee of factual correctness.</p>")
+                 "A normal provider stop or completed automated check is not a guarantee of factual correctness or completeness.</p>")
     return "".join(parts)

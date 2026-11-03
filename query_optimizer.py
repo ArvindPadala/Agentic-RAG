@@ -9,6 +9,7 @@ from google.genai import types as genai_types
 from llm_router import GeminiRouter
 from contextlib import nullcontext
 from utils.logger import get_logger
+from execution import require_complete_response
 
 logger = get_logger("query_optimizer")
 
@@ -52,6 +53,7 @@ def decompose_query(raw_query: str, gemini_router: GeminiRouter,
             response = gemini_router.models.generate_content(model=model, contents=[raw_query], config=config)
 
         # Parse the JSON response
+        require_complete_response(response)
         sub_queries = json.loads(response.text)
 
         if (not isinstance(sub_queries, list) or not 1 <= len(sub_queries) <= 3

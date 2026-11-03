@@ -10,18 +10,19 @@ from fastapi.testclient import TestClient
 from google.genai import types
 
 from agent import build_agent_config, build_search_tool, run_agent_turn
-from app import build_ui
+from app import build_ui, make_chat_fn
 from evidence import EvidenceCollector
 from evidence import EvidenceHistory
-from execution import ExecutionTrace, render_execution
+from execution import ExecutionTrace, IncompleteResponseError, execution_status, render_execution
 from live_guardrail import check_faithfulness
 from query_optimizer import decompose_query
 from tests.test_runtime_privacy import collection, ready_collection  # noqa: F401 - real fixture
 from tests.test_supabase_memory import A, browser_request, sessions, snapshot
 
 
-def reply(text):
+def reply(text, finish_reason="STOP"):
     return types.GenerateContentResponse(candidates=[types.Candidate(
+        finish_reason=finish_reason,
         content=types.Content(role="model", parts=[types.Part(text=text)]))])
 
 
@@ -65,7 +66,7 @@ def test_actual_graph_records_stages_queries_searches_and_current_turn_grounding
     stages, trace, collector = [], ExecutionTrace("Standard Vector Search"), EvidenceCollector()
     trace.on_stage = stages.append
     search, tool = build_search_tool(collection, None, None, None, evidence_collector=collector, execution=trace)
-    tool_call = types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
+    tool_call = types.GenerateContentResponse(candidates=[types.Candidate(finish_reason="STOP", content=types.Content(
         role="model", parts=[types.Part(function_call=types.FunctionCall(
             name="search_knowledge_base", args={"query": "showcase"}))]))])
     client = MagicMock()
@@ -103,6 +104,118 @@ def test_disabled_check_has_no_judge_call_and_empty_responses_fail_cleanly():
         run_agent_turn("Question", [], client, build_agent_config(types.Tool(), {}), {})
 
 
+@pytest.mark.parametrize("reason,recorded", [
+    ("MAX_TOKENS", "MAX_TOKENS"), ("SAFETY", "SAFETY"), ("OTHER", "OTHER"), (None, "UNKNOWN"),
+])
+def test_non_normal_finish_withholds_text_skips_grounding_and_restores_history(reason, recorded):
+    client, trace = MagicMock(), ExecutionTrace()
+    client.models.generate_content.return_value = reply("partial-private-response-sentinel", reason)
+    previous = types.Content(role="model", parts=[types.Part(text="Previous completed answer")])
+    history = [previous]
+    with pytest.raises(IncompleteResponseError) as raised:
+        run_agent_turn("Question", history, client, build_agent_config(types.Tool(), {}), {},
+                       use_guardrail=True, execution=trace)
+    assert raised.value.finish_reason == recorded
+    assert "partial-private" not in str(raised.value)
+    assert history == [previous]
+    assert trace.snapshot()["finish_reason"] == recorded
+    assert trace.snapshot()["status"] == "incomplete"
+    assert trace.snapshot()["grounding"] == "not_run"
+    assert client.models.generate_content.call_count == 1
+
+
+def test_partial_tool_call_never_executes():
+    client, trace, tool = MagicMock(), ExecutionTrace(), MagicMock()
+    client.models.generate_content.return_value = types.GenerateContentResponse(candidates=[types.Candidate(
+        finish_reason="MAX_TOKENS", content=types.Content(role="model", parts=[
+            types.Part.from_function_call(name="search_knowledge_base", args={"query": "partial"})]))])
+    with pytest.raises(IncompleteResponseError):
+        run_agent_turn("Question", [], client, build_agent_config(types.Tool(), {}),
+                       {"search_knowledge_base": tool}, use_guardrail=True, execution=trace)
+    tool.assert_not_called()
+    assert client.models.generate_content.call_count == 1
+
+
+def test_incomplete_final_answer_rolls_back_earlier_successful_tool_cycle():
+    client, trace, tool = MagicMock(), ExecutionTrace(), MagicMock(return_value="Public evidence")
+    client.models.generate_content.side_effect = [
+        types.GenerateContentResponse(candidates=[types.Candidate(finish_reason="STOP", content=types.Content(
+            role="model", parts=[types.Part.from_function_call(name="search_knowledge_base", args={"query": "public"})]))]),
+        reply("unfinished final response", "MAX_TOKENS"),
+    ]
+    previous = types.Content(role="model", parts=[types.Part(text="Previous completed answer")])
+    history = [previous]
+    with pytest.raises(IncompleteResponseError):
+        run_agent_turn("Question", history, client, build_agent_config(types.Tool(), {}),
+                       {"search_knowledge_base": tool}, use_guardrail=True, execution=trace)
+    tool.assert_called_once_with(query="public")
+    assert history == [previous]
+    assert trace.snapshot()["finish_reason"] == "MAX_TOKENS"
+    assert client.models.generate_content.call_count == 2
+
+
+@pytest.mark.parametrize("error", [RuntimeError("provider failure"), KeyboardInterrupt()])
+def test_provider_failure_or_operator_interrupt_rolls_back_before_cli_can_save(error):
+    client, trace, tool = MagicMock(), ExecutionTrace(), MagicMock(return_value="Public evidence")
+    client.models.generate_content.side_effect = [
+        types.GenerateContentResponse(candidates=[types.Candidate(finish_reason="STOP", content=types.Content(
+            role="model", parts=[types.Part.from_function_call(name="search_knowledge_base", args={"query": "public"})]))]),
+        error,
+    ]
+    previous = types.Content(role="model", parts=[types.Part(text="Previous completed context")])
+    history = [previous]
+    with pytest.raises(type(error)):
+        run_agent_turn("Question", history, client, build_agent_config(types.Tool(), {}),
+                       {"search_knowledge_base": tool}, execution=trace)
+    assert history == [previous]
+    assert trace.snapshot()["status"] == "failed"
+    assert trace.snapshot()["finish_reason"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("reason", ["MAX_TOKENS", None])
+def test_incomplete_structured_json_cannot_pass_grounding_or_decomposition(reason):
+    client, trace = MagicMock(), ExecutionTrace()
+    client.models.generate_content.return_value = reply('{"is_faithful":true,"reason":"Looks complete."}', reason)
+    assert check_faithfulness("Answer", ["Passage"], client).status == "unavailable"
+    client.models.generate_content.return_value = reply('["apparently valid query"]', reason)
+    assert decompose_query("Original question", client, execution=trace) == ["Original question"]
+    assert trace.snapshot()["decomposition"] == "fallback"
+
+
+@pytest.mark.parametrize("parts", [
+    [types.Part(text=" ")], [types.Part(text="hidden thought sentinel", thought=True)],
+])
+def test_normal_stop_without_visible_answer_fails_and_preserves_history(parts):
+    client, trace, history = MagicMock(), ExecutionTrace(), []
+    client.models.generate_content.return_value = types.GenerateContentResponse(candidates=[types.Candidate(
+        finish_reason="STOP", content=types.Content(role="model", parts=parts))])
+    with pytest.raises(RuntimeError, match="no usable response"):
+        run_agent_turn("Question", history, client, build_agent_config(types.Tool(), {}), {},
+                       use_guardrail=True, execution=trace)
+    assert history == []
+    assert trace.snapshot()["status"] == "failed"
+    assert client.models.generate_content.call_count == 1
+
+
+@pytest.mark.parametrize("return_evidence", [False, True])
+def test_web_incomplete_response_preserves_completed_context_and_hides_partial_text(collection, return_evidence):
+    client, trace = MagicMock(), ExecutionTrace()
+    client.models.generate_content.return_value = reply("partial-private-response-sentinel", "MAX_TOKENS")
+    previous = types.Content(role="model", parts=[types.Part(text="Previous completed context")])
+    chat = make_chat_fn(client, {}, "unused.json", None, collection, None, return_evidence=return_evidence)
+    output = chat("Question", [], [previous], "Standard Vector Search", False, True, execution=trace)
+    assert output[1] == [previous]
+    assert "output limit" in output[0][-1]["content"]
+    assert "partial-private" not in str(output)
+    if return_evidence:
+        assert output[5] is None
+    summary = trace.snapshot()
+    assert summary["status"] == "incomplete" and summary["grounding"] == "not_run"
+    assert "Answer ready" not in execution_status(summary)
+    assert "MAX_TOKENS" in render_execution(summary)
+    assert client.models.generate_content.call_count == 1
+
+
 def test_execution_display_escapes_queries_and_does_not_infer_costs():
     trace = ExecutionTrace("Vector")
     trace.set_decomposition("completed", ["<script>bad()</script>"])
@@ -116,7 +229,7 @@ def test_execution_display_escapes_queries_and_does_not_infer_costs():
 def test_failed_retrieval_is_counted_and_excluded_from_grounding_context():
     trace, collection = ExecutionTrace(), MagicMock()
     search, tool = build_search_tool(collection, None, None, None, execution=trace)
-    tool_call = types.GenerateContentResponse(candidates=[types.Candidate(content=types.Content(
+    tool_call = types.GenerateContentResponse(candidates=[types.Candidate(finish_reason="STOP", content=types.Content(
         role="model", parts=[types.Part(function_call=types.FunctionCall(
             name="search_knowledge_base", args={"query": "query"}))]))])
     client = MagicMock()

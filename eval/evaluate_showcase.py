@@ -146,7 +146,7 @@ def live_case(case, collection, groups, model, mode, guardrail):
     from config import settings
     from access_control import RuntimePolicy
     from evidence import EvidenceCollector, authorized_passages, citation_numbers, format_citations
-    from execution import ExecutionTrace
+    from execution import ExecutionTrace, IncompleteResponseError
     from llm_router import GeminiRouter
 
     # Fresh router/history/evidence per case. No user memory, Supabase or S3.
@@ -182,6 +182,9 @@ def live_case(case, collection, groups, model, mode, guardrail):
                               "title": p.title, "pdf_page": p.page + 1, "excerpt": p.excerpt}
                              for p in allowed])
         execution.finish("completed", records, cited)
+    except IncompleteResponseError as error:
+        row.update(status="incomplete", error=error_details(error))
+        execution.finish("incomplete")
     except Exception as error:
         row["error"] = error_details(error)
         execution.finish("failed")
@@ -224,7 +227,7 @@ def review_report(path, *, case_ids=(), recheck_citations=False):
         print("Raw grouped reference syntax (not necessarily invalid): "
               + json.dumps(GROUPED_REFERENCE_RE.findall(row.get("answer", ""))))
         print(json.dumps({key: execution.get(key) for key in (
-            "elapsed", "searches", "generation_calls", "decomposition", "grounding", "grounding_reason")}, indent=2))
+            "elapsed", "searches", "generation_calls", "finish_reason", "decomposition", "grounding", "grounding_reason")}, indent=2))
         answer = row.get("answer", "")
         cited_ids = row.get("cited_ids", [])
         if recheck_citations:

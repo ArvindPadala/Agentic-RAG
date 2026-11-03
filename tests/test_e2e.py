@@ -10,8 +10,10 @@ class TestAgentE2E(unittest.TestCase):
         mock_part = MagicMock()
         mock_part.function_call = None
         mock_part.text = "This is a mocked response about transformers."
+        mock_part.thought = False
 
         mock_candidate = MagicMock()
+        mock_candidate.finish_reason = "STOP"
         mock_candidate.content.parts = [mock_part]
 
         mock_response = MagicMock()

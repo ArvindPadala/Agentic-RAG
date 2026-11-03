@@ -256,3 +256,59 @@ Verification after the fix:
 No new provider calls, browser runs, SQL checks, image builds or deployments were
 needed for this formatting follow-up. Incomplete-response and quota/deadline
 handling remain separate follow-up work.
+
+## Follow-up: provider completion handling
+
+Implemented and verified locally on 2 November 2026.
+
+The agent now accepts only an explicit `STOP` finish reason from its chosen
+provider candidate before using text or executing tools. `MAX_TOKENS`, other
+non-normal reasons and missing/unknown metadata raise a safe
+`IncompleteResponseError`. Partial text is neither displayed nor attached to
+the exception or saved as an accepted answer. Empty/whitespace or thought-only
+responses also fail without a completed grounding verdict.
+
+Failed and interrupted graph turns restore prior conversation history, including
+CLI Ctrl-C before memory-on-exit. The web request reports `incomplete` with a
+retry/narrower-question message and no new evidence turn. There is no automatic
+regeneration, increased output budget or extra judge call for incomplete answers.
+
+The same completion requirement applies to structured grounding/decomposition
+responses, even if their JSON happens to parse. An incomplete judge response
+becomes `unavailable`; incomplete decomposition falls back to the original query.
+New execution snapshots include `finish_reason` for the final attempted agent
+call, and evaluator cases report `incomplete` instead of `completed`. The batch
+stops on that non-success outcome after saving diagnostics. Unknown provider
+metadata is normalized rather than exposing arbitrary strings.
+
+These finish reasons establish transport/provider termination, **not semantic
+completeness or factual accuracy**. The original cross-report answer had no saved
+finish reason, so this follow-up does not retroactively prove why it ended
+mid-sentence. Historical reports and measured retrieval scores remain intact.
+
+Checks actually executed:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' make test
+PYTHONDONTWRITEBYTECODE=1 make lint
+PYTHONDONTWRITEBYTECODE=1 python -m tests.browser_demo_ux \
+  --artifacts /var/folders/5n/2qvbhdkn6jx2995yk4_5jv680000gn/T/opencode/incomplete-response-browser
+git diff --check
+```
+
+- Final full suite: **153 passed**, 43 dependency/fixture warnings.
+- Configured lint: **0 issues**; diff whitespace check passed.
+- Real Chrome with synthetic provider/data: desktop and mobile-emulated public
+  research flows passed, including graph stages, decomposition, unavailable
+  grounding, citations/previews, follow-ups and clear. This smoke run verifies
+  normal `STOP` compatibility; targeted graph/web-handler regressions exercise
+  incomplete/blocked/missing finish reasons and rollback.
+- Synthetic SDK candidates explicitly declare finish reasons. Regressions cover
+  aborted tool calls, a truncated final answer after a successful tool cycle,
+  parseable-but-incomplete structured JSON, empty/hidden-only answers, ordinary
+  provider failure and operator interruption, and incomplete evaluator rows.
+
+No new live Gemini/Auth calls, physical-device checks, SQL checks, container
+builds, dependency changes or deployments were performed. Provider deadlines,
+retry classification/routing, pacing and the remaining live quota failure still
+need the next reliability increment before another targeted live evaluation.
