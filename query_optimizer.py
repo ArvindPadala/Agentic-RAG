@@ -10,6 +10,7 @@ from llm_router import GeminiRouter
 from contextlib import nullcontext
 from utils.logger import get_logger
 from execution import require_complete_response
+from llm_router import check_provider_budget
 
 logger = get_logger("query_optimizer")
 
@@ -49,10 +50,12 @@ def decompose_query(raw_query: str, gemini_router: GeminiRouter,
     )
 
     try:
+        check_provider_budget()
         with execution.measure("decomposition", "Optimising search queries") if execution else nullcontext():
             response = gemini_router.models.generate_content(model=model, contents=[raw_query], config=config)
 
         # Parse the JSON response
+        check_provider_budget()
         require_complete_response(response)
         sub_queries = json.loads(response.text)
 

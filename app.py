@@ -51,6 +51,7 @@ from private_sessions import PrivateSessions
 from evidence import (EvidenceCollector, EvidenceHistory, EvidenceTurn, EVIDENCE_CLICK_JS,
                       authorized_passages, format_citations, render_cards)
 from execution import ExecutionTrace, IncompleteResponseError, execution_status, render_execution
+from llm_router import ProviderTimeoutError, ProviderAttemptsExceeded
 
 logger = get_logger("app")
 
@@ -403,7 +404,12 @@ def make_chat_fn(gemini_client, memory, memory_file,
             )
             elapsed_time = time.time() - start_time
         except Exception as e:
-            if isinstance(e, IncompleteResponseError):
+            if isinstance(e, (ProviderTimeoutError, ProviderAttemptsExceeded)):
+                if execution:
+                    execution.finish("timed_out" if isinstance(e, ProviderTimeoutError) else "budget_exhausted")
+                error_msg = ("**The provider request could not finish within its limits.** " + str(e)
+                             + " Your previous completed context was preserved.")
+            elif isinstance(e, IncompleteResponseError):
                 if execution:
                     execution.set_finish_reason(e.finish_reason)
                     execution.finish("incomplete")

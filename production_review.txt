@@ -1875,4 +1875,65 @@ Recorded: 2026-11-02
   Auth, SQL, Docker, dependency or hosted deployment operation was performed.
   Provider deadline/retry budgets and rate-limit pacing remain the next work.
 
+16. REQUEST-LOCAL PROVIDER ROUTING AND SHARED BUDGETS
+=====================================================
+Recorded: 2026-11-13 local / 2026-11-14 UTC
+
+- Replaced shared mutable route indices with request-local cursors/cooldowns;
+  removed duplicate fallback models/keys and preserved explicit stage-model
+  selection. SDK HTTP retries and automatic tool execution are disabled.
+- Added validated operator defaults: 90-second cooperative scheduling budget,
+  30-second SDK socket timeout cap, twelve turn dispatches and three per call.
+  Budgets propagate through decomposition, graph nodes, tool-worker contexts,
+  retries and grounding. Late results are rejected; history rollback is preserved.
+- Only transient statuses/connections retry; permanent errors fail quickly,
+  structured daily/zero quotas and auth errors stop further turn dispatches,
+  and Retry-After/RetryInfo minimum delays cannot be bypassed by stage fallback.
+  Ambiguous read/write timeouts are not automatically retried.
+- UI/evaluation distinguish timeout and attempt-budget exhaustion. Diagnostics
+  record real router dispatches, retry waiting, attempted models and limits,
+  without raw provider bodies, URLs, keys, or inferred token/cost figures.
+- Limitation: synchronous in-flight SDK/retrieval work cannot be forcibly
+  cancelled. Scheduling checks/socket timeouts are not a hard wall-clock SLA.
+- Checks: 197 pytest tests passed (43 warnings); lint 0; desktop/mobile-emulated
+  synthetic browser smoke passed; local ARM64 production build and network-disabled
+  pip/import smokes passed. Forty-two router cases cover status/retry guidance,
+  concurrent requests, total/per-call limits, real graph context propagation,
+  late results, redaction and the actual SDK/HTTPX mock transport.
+- Targeted live continuation completed unsupported-current-price (four dispatches,
+  29.07 s) and technology-costs (three, 3.93 s), both with STOP and completed
+  grounding, zero retry wait. No transient error occurred in these samples; this
+  does not prove quota recovery under real load or replace the full benchmark.
+- Details and exact commands: PROVIDER_RELIABILITY.md and eval/IPCC_EVALUATION.md.
+  Original result files remain intact. No HF push/deploy or live Auth mutation.
+  Remaining useful checks: deployment-specific fallback availability, measured
+  concurrent load/global admission limits, and dependency/AMD64 reproducibility.
+
+17. LIVE FALLBACK AVAILABILITY AND LOCAL CONCURRENCY CHECKS
+==========================================================
+Recorded: 2026-11-13 local / 2026-11-14 UTC
+
+- Verified P1 defect: the configured gemini-3.6-flash-lite fallback returned 404
+  on metadata for both local credentials and on one explicit generation dispatch.
+  This could terminate failover after a transient primary-model failure.
+- Replaced it with gemini-3.5-flash-lite after a successful actual IPCC tool/search,
+  cited-answer and grounding case (three dispatches, STOP, about 2.75 s). Added
+  a regression proving the default route selects it after both primary keys fail.
+  Six metadata checks for current defaults then passed; quota/quality are separate.
+- Added eval/check_provider_release.py with metadata-only --live checking and a
+  local synthetic-transport workload. Corrected worker-entry/import warmup timing
+  before retaining three new warm measurement reports; originals were preserved.
+- Eight requests each at one/two/two workers all completed, recovering 4/4/8
+  synthetic 429s using 28/28/32 SDK dispatches. All request contexts/dispatch
+  accounting matched; the stronger run selected the synthetic fallback as expected.
+- These are agent-layer measurements on a shared host with synthetic generation/
+  judge responses and actual public IPCC retrieval/reranking. They do not establish
+  hosted HTTP/SSE capacity, real Gemini throughput, cold-start safety or quality.
+- Final regression suite: 204 passed, 43 warnings; lint 0 configured issues.
+  Live/generated/metadata artifacts and exact commands are documented in
+  PROVIDER_RELIABILITY.md and eval/IPCC_EVALUATION.md; no secrets/private rows
+  were printed, and no HF push/deployment or private Auth/memory mutation occurred.
+- Next useful release actions: commit the changes, resolve old HF artifacts,
+  validate hosted HTTPS behavior, then bound/measure actual queue admission.
+
 END OF CONSOLIDATED REVIEW

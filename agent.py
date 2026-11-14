@@ -17,11 +17,13 @@ Prerequisites (already done if you ran the notebook):
 """
 
 import concurrent.futures
+from contextvars import copy_context
 from execution import ExecutionTrace, IncompleteResponseError, require_complete_response
 from typing import TypedDict, Any, List
 from langgraph.graph import StateGraph, START, END
 from langsmith import traceable
-from llm_router import GeminiRouter
+from llm_router import (GeminiRouter, ProviderTimeoutError, ProviderAttemptsExceeded,
+                        check_provider_budget, provider_request)
 from visual_grounding_helper import extract_chunk_image
 from gemini_helpers import (
     init_chroma_collection,
@@ -47,7 +49,7 @@ logger = get_logger('agent')
 
 def create_gemini_router(api_keys: list) -> GeminiRouter:
     """Create and validate the robust Gemini router."""
-    router = GeminiRouter(api_keys=api_keys)
+    router = GeminiRouter(api_keys=api_keys, policy=settings.PROVIDER_POLICY)
     logger.info("✅ Gemini router ready")
     return router
 
@@ -343,11 +345,13 @@ def build_agent_graph():
             forced_config = generation_config
 
         execution = state["execution"]
+        check_provider_budget()
         execution.generation_started()
         execution.set_finish_reason("UNKNOWN")
         with execution.measure("generation", "Generating a response or next search"):
             response = gemini_client.models.generate_content(
                 model=model, contents=conversation_history, config=forced_config)
+        check_provider_budget()
         try:
             candidate = require_complete_response(response)
         except IncompleteResponseError as error:
@@ -377,6 +381,7 @@ def build_agent_graph():
         function_responses = []
 
         def execute_single_tool(part):
+            check_provider_budget()
             fc = part.function_call
             tool_name = fc.name
             tool_args = dict(fc.args) if fc.args else {}
@@ -392,6 +397,7 @@ def build_agent_graph():
             else:
                 tool_result = f"Error: Unknown tool '{tool_name}'"
 
+            check_provider_budget()
             return genai_types.Part.from_function_response(
                 name=tool_name,
                 response={"result": tool_result},
@@ -399,11 +405,9 @@ def build_agent_graph():
 
         # Run tool calls in parallel using a thread pool
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            # Map returns results in the same order
-            function_responses = list(
-                executor.map(
-                    execute_single_tool,
-                    tool_calls))
+            futures = [executor.submit(copy_context().run, execute_single_tool, part) for part in tool_calls]
+            function_responses = [future.result() for future in futures]
+        check_provider_budget()
 
         conversation_history.append(
             genai_types.Content(role="user", parts=function_responses)
@@ -444,6 +448,7 @@ def build_agent_graph():
 
             with state["execution"].measure("grounding", "Checking the answer against retrieved evidence"):
                 verdict = check_faithfulness(final_text, context_chunks, gemini_client)
+            check_provider_budget()
             state["execution"].set_grounding(verdict)
             if verdict.status == "flagged":
                 final_text += "\n\n> **Automated grounding check: Flagged.** Some claims may not be supported by the retrieved evidence. Inspect the sources."
@@ -506,66 +511,45 @@ def run_agent_turn(
     Process one user message through the LangGraph agent state machine.
     """
     execution = execution or ExecutionTrace("Agent/CLI")
+    policy = gemini_client.policy if isinstance(gemini_client, GeminiRouter) else settings.PROVIDER_POLICY
     turn_start = len(conversation_history)
-    if use_decomposition:
-        from query_optimizer import decompose_query
-        sub_queries = decompose_query(user_message, gemini_client, execution=execution)
-        if len(sub_queries) > 1 or (len(sub_queries) ==
-                                    1 and sub_queries[0] != user_message):
-            formatted_queries = "\n".join([f"- {q}" for q in sub_queries])
-            injected_message = (
-                f"User Question: {user_message}\n\n"
-                f"[System: To answer this, please use your search tool to explore these optimized sub-queries:]\n"
-                f"{formatted_queries}"
-            )
-        else:
+    with provider_request(policy, execution) as budget:
+        try:
+            budget.check()
             injected_message = user_message
-    else:
-        injected_message = user_message
-
-    # Add user's message to history
-    conversation_history.append(
-        genai_types.Content(
-            role="user", parts=[
-                genai_types.Part(
-                    text=injected_message)])
-    )
-
-    initial_state = {
-        "conversation_history": conversation_history,
-        "iteration": 0,
-        "max_iterations": max_iterations,
-        "gemini_client": gemini_client,
-        "generation_config": generation_config,
-        "tool_map": tool_map,
-        "model": model,
-        "use_guardrail": use_guardrail,
-        "final_text": "",
-        "execution": execution,
-        "turn_start": turn_start,
-    }
-
-    try:
-        final_state = COMPILED_AGENT_GRAPH.invoke(initial_state)
-    except BaseException as error:
-        # Covers shared CLI callers as well as the web wrapper's working copy:
-        # never retain a failed user/tool cycle or partial model turn.
-        # Keyboard interruption must roll back before CLI memory-on-exit runs.
-        del conversation_history[turn_start:]
-        execution.finish("incomplete" if isinstance(error, IncompleteResponseError) else "failed")
-        raise
-
-    if not final_state.get("final_text"):
-        fallback_text = "I'm sorry, I was unable to find a complete answer within the allowed number of searches."
-        conversation_history.append(
-            genai_types.Content(
-                role="model", parts=[
-                    genai_types.Part(
-                        text=fallback_text)])
-        )
-        return fallback_text
-
-    return final_state["final_text"]
+            if use_decomposition:
+                from query_optimizer import decompose_query
+                sub_queries = decompose_query(user_message, gemini_client, execution=execution)
+                budget.check()
+                if len(sub_queries) > 1 or (len(sub_queries) == 1 and sub_queries[0] != user_message):
+                    formatted_queries = "\n".join(f"- {query}" for query in sub_queries)
+                    injected_message = (
+                        f"User Question: {user_message}\n\n"
+                        f"[System: To answer this, please use your search tool to explore these optimized sub-queries:]\n"
+                        f"{formatted_queries}")
+            conversation_history.append(genai_types.Content(
+                role="user", parts=[genai_types.Part(text=injected_message)]))
+            initial_state = {
+                "conversation_history": conversation_history, "iteration": 0, "max_iterations": max_iterations,
+                "gemini_client": gemini_client, "generation_config": generation_config, "tool_map": tool_map,
+                "model": model, "use_guardrail": use_guardrail, "final_text": "", "execution": execution,
+                "turn_start": turn_start,
+            }
+            final_state = COMPILED_AGENT_GRAPH.invoke(initial_state)
+            budget.check()
+            if not final_state.get("final_text"):
+                fallback_text = "I'm sorry, I was unable to find a complete answer within the allowed number of searches."
+                conversation_history.append(genai_types.Content(role="model", parts=[genai_types.Part(text=fallback_text)]))
+                return fallback_text
+            return final_state["final_text"]
+        except BaseException as error:
+            # Also roll back operator interruption before CLI memory-on-exit.
+            del conversation_history[turn_start:]
+            status = ("timed_out" if isinstance(error, ProviderTimeoutError) else
+                      "budget_exhausted" if isinstance(error, ProviderAttemptsExceeded) else
+                      "incomplete" if isinstance(error, IncompleteResponseError) else "failed")
+            execution.finish(status)
+            raise
 
 
 # ── 7. Chat Loop ────────────────────────────────────────────────────────

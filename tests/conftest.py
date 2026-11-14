@@ -17,6 +17,10 @@ os.environ.update({
     "LANGSMITH_TRACING": "false",
     "ANONYMIZED_TELEMETRY": "false",
     "GRADIO_ANALYTICS_ENABLED": "false",
+    "PROVIDER_TURN_TIMEOUT_SECONDS": "90",
+    "PROVIDER_CALL_TIMEOUT_SECONDS": "30",
+    "PROVIDER_MAX_ATTEMPTS": "12",
+    "PROVIDER_MAX_ATTEMPTS_PER_CALL": "3",
 })
 # Hosted-environment checks have dedicated tests rather than depending on the
 # runner (including when this test suite runs inside a Space).

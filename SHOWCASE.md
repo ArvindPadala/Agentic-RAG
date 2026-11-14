@@ -89,6 +89,10 @@ No grounding call is made for an incomplete answer. A normally stopped answer
 with an incomplete grounding response instead reports the check **Unavailable**.
 Provider finish reason is shown in execution details; a normal stop does not
 guarantee that an answer is factually correct or semantically complete.
+Provider work also shares configurable time/attempt budgets across query planning,
+generation, retries and grounding. Execution details show router dispatch counts,
+retry waiting and attempted models. See [PROVIDER_RELIABILITY.md](PROVIDER_RELIABILITY.md)
+for defaults, selective retry behavior and the limits of synchronous cancellation.
 The **How this works** tab separates earlier FEMA-corpus benchmarks from IPCC
 retrieval smoke checks and current-request observations.
 

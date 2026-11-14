@@ -10,6 +10,7 @@ import pytest
 from eval.evaluate_showcase import (DATASET, error_details, live_case, load_benchmark,
                                     resolve_evidence, score_evidence, summarize)
 from showcase_corpus import PARSER_VERSION, curated_sources
+from llm_router import ProviderDeadlineExceeded, ProviderAttemptsExceeded
 
 
 def benchmark():
@@ -117,6 +118,18 @@ def test_incomplete_agent_response_is_not_a_completed_evaluation_case():
     assert "answer" not in row
     assert "partial answer sentinel" not in json.dumps(row)
     assert router.models.generate_content.call_count == 1
+
+
+@pytest.mark.parametrize("error,status", [
+    (ProviderDeadlineExceeded(), "timed_out"), (ProviderAttemptsExceeded(), "budget_exhausted"),
+])
+def test_evaluation_preserves_specific_budget_failure_outcome(error, status):
+    router = MagicMock()
+    router.models.generate_content.side_effect = error
+    with patch("llm_router.GeminiRouter", return_value=router):
+        row = live_case(benchmark()["cases"][0], MagicMock(), [{"fixture"}], "fixture-model", "vector", False)
+    assert row["status"] == row["execution"]["status"] == status
+    assert "answer" not in row
 
 
 def test_cli_saves_failure_and_stops_before_next_live_case(tmp_path, monkeypatch):

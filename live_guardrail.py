@@ -10,6 +10,7 @@ from google.genai import types as genai_types
 from llm_router import GeminiRouter
 from utils.logger import get_logger
 from execution import require_complete_response
+from llm_router import check_provider_budget
 
 logger = get_logger("live_guardrail")
 
@@ -69,12 +70,14 @@ def check_faithfulness(answer: str, context_chunks: list[str], gemini_router: Ge
     )
 
     try:
+        check_provider_budget()
         response = gemini_router.models.generate_content(
             model=model,
             contents=[evaluation_input],
             config=config
         )
 
+        check_provider_budget()
         require_complete_response(response)
         result = json.loads(response.text)
         if (not isinstance(result, dict) or type(result.get("is_faithful")) is not bool

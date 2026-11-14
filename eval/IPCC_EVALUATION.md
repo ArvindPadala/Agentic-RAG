@@ -312,3 +312,82 @@ No new live Gemini/Auth calls, physical-device checks, SQL checks, container
 builds, dependency changes or deployments were performed. Provider deadlines,
 retry classification/routing, pacing and the remaining live quota failure still
 need the next reliability increment before another targeted live evaluation.
+
+## Follow-up: bounded provider routing and targeted continuation
+
+Implemented and verified on 13 November 2026 local time (14 November UTC in the
+saved live reports). Configuration, retry decisions and deadline semantics are
+documented in [PROVIDER_RELIABILITY.md](../PROVIDER_RELIABILITY.md).
+
+The router no longer shares mutable key/model indices between visitors. One
+request retains its own working routes and retry cooldowns across stages; a
+different explicit stage model has its own route. Duplicate model/key entries
+are removed, and transient versus permanent statuses receive separate policies.
+SDK HTTP retries/automatic function calling are disabled so router dispatch
+accounting covers the SDK calls it controls.
+
+Defaults are a 90-second shared scheduling budget, SDK socket timeout capped at
+30 seconds/remaining budget, twelve turn dispatches, and three per logical call.
+The budget includes decomposition, generation, elapsed retrieval/tool time,
+retry waiting and grounding. No late provider result is accepted or subsequent
+call admitted after expiry. Synchronous in-flight work cannot be forcibly
+cancelled, so these are **not strict end-to-end wall-clock guarantees**.
+
+Required-call failures now preserve `timed_out` or `budget_exhausted` outcomes in
+UI/evaluation, with prior history intact. Optional grounding can report
+Unavailable without another dispatch when its attempt reservation fails while
+time remains. New snapshots record dispatch totals, retry waiting, models tried
+and configured budgets, separate from logical generation calls and token costs.
+
+Only two live cases were selected; earlier result files were not overwritten:
+
+| New local artifact | Case | Result |
+|---|---|---|
+| `eval/results/ipcc_provider_budget_check.json` | `unsupported-current-price` | Completed in 29.07 s, four router dispatches, zero retry waiting, normal `STOP`; correctly explains the missing current/local price evidence |
+| `eval/results/ipcc_provider_budget_positive.json` | `technology-costs` | Completed in 3.93 s, three router dispatches, zero retry waiting, normal `STOP`; correct dated percentages with captured WGIII citation |
+
+Both grounding verdicts completed. Both runs used the requested generation model
+and the separately requested grounding model, now visible in `provider_models`.
+These two successes do not show that quota errors are eliminated or establish a
+causal speedup; no transient provider failure occurred in either selected run.
+The original interrupted baseline and 429 failure remain valid historical records.
+
+Full checks: **197 pytest tests passed** (43 warnings), configured lint reported
+**0 issues**, desktop/mobile-emulated synthetic Chrome public flows passed, the
+production ARM64 image built, and network-disabled dependency/import smokes passed.
+`tests/test_llm_router.py` adds 42 deterministic cases; an actual SDK mock transport
+confirms that per-request timeouts reach HTTPX and SDK retry overrides cannot
+multiply router attempts. No full benchmark, load test, AMD64 build, live Auth,
+SQL change or HF deployment was performed. See the linked guide for exact
+commands, environment variables and remaining limits.
+
+## Follow-up: fallback availability and bounded concurrency
+
+The live metadata check found that the former default fallback
+`models/gemini-3.6-flash-lite` was unavailable (404) under both local credentials.
+A targeted generation check confirmed 404 with one SDK dispatch. The available
+`models/gemini-3.5-flash-lite` then completed the technology-cost case with actual
+search/tool calling, correct 85%/55%/85% values and a WGIII citation, `STOP`, and
+completed grounding. It used three dispatches in approximately 2.75 s. The router
+default was changed to this model, with a default-failover regression. Afterward,
+all six metadata reads for the three distinct default model IDs/two credentials
+passed. Metadata is not a guarantee of generation quota or general model quality.
+
+`eval/check_provider_release.py` provides explicit live metadata checking and a
+separate synthetic-provider local load experiment. Three corrected warm bursts,
+eight requests each at one/two workers, all completed with isolated request
+markers and matching SDK dispatch accounting. They recovered four/four/eight
+injected 429s using 28/28/32 dispatches, with the last run exercising synthetic
+model fallback. Responses and judge outputs were synthetic; actual approved-IPCC
+retrieval/reranking and agent/router/evidence code executed.
+
+This does not change the earlier answer-quality or retrieval scores and is not
+a Gradio HTTP load test or real Gemini throughput measurement. Initial timing
+reports were preserved when a lazy-import queue-timing issue was corrected; only
+the new `_warm` reports are used for latency observations. Exact commands,
+artifact names, measurements, caveats and the verified P1 fallback fix are in
+[PROVIDER_RELIABILITY.md](../PROVIDER_RELIABILITY.md).
+
+Final regression verification for this follow-up: **204 passed**, 43 warnings;
+lint **0 configured issues**. No HF deployment, SQL change, private Auth/memory
+operation, full quality rerun or real provider concurrency burst was performed.

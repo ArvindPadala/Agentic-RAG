@@ -53,6 +53,13 @@ class ExecutionTrace:
         self.searches = 0
         self.generation_calls = 0
         self.finish_reason = "not_run"
+        self.provider_attempts = 0
+        self.provider_retry_wait_seconds = 0.0
+        self.provider_models = []
+        self.provider_time_budget_seconds = None
+        self.provider_attempt_limit = None
+        self.provider_call_timeout_seconds = None
+        self.provider_attempts_per_call_limit = None
         self.search_errors = 0
         self.decomposition = "not_run"
         self.subqueries = []
@@ -101,6 +108,23 @@ class ExecutionTrace:
         with self._lock:
             self.finish_reason = _finish_reason(reason)
 
+    def set_provider_limits(self, seconds, attempts, call_seconds, attempts_per_call):
+        with self._lock:
+            self.provider_time_budget_seconds = seconds
+            self.provider_attempt_limit = attempts
+            self.provider_call_timeout_seconds = call_seconds
+            self.provider_attempts_per_call_limit = attempts_per_call
+
+    def provider_attempt_started(self, model):
+        with self._lock:
+            self.provider_attempts += 1
+            if model not in self.provider_models:
+                self.provider_models.append(model)
+
+    def provider_retry_waited(self, seconds):
+        with self._lock:
+            self.provider_retry_wait_seconds += seconds
+
     def set_decomposition(self, status, queries=()):
         with self._lock:
             self.decomposition = status
@@ -126,6 +150,13 @@ class ExecutionTrace:
                     "stages": list(self.stages), "timings": dict(self.timings),
                     "searches": self.searches, "generation_calls": self.generation_calls,
                     "finish_reason": self.finish_reason,
+                    "provider_attempts": self.provider_attempts,
+                    "provider_retry_wait_seconds": self.provider_retry_wait_seconds,
+                    "provider_models": list(self.provider_models),
+                    "provider_time_budget_seconds": self.provider_time_budget_seconds,
+                    "provider_attempt_limit": self.provider_attempt_limit,
+                    "provider_call_timeout_seconds": self.provider_call_timeout_seconds,
+                    "provider_attempts_per_call_limit": self.provider_attempts_per_call_limit,
                     "search_errors": self.search_errors, "decomposition": self.decomposition,
                     "subqueries": list(self.subqueries), "grounding": self.grounding,
                     "grounding_reason": self.grounding_reason, "passages": self.passages,
@@ -143,6 +174,8 @@ def execution_status(summary):
         "overloaded": "The provider is temporarily overloaded. Wait a moment and retry.",
         "failed": "The request failed. Retry your question; the previous completed context was preserved.",
         "incomplete": "The model response was incomplete and was not saved. Your previous completed context was preserved.",
+        "timed_out": "The provider request reached its time limit. Retry with a narrower question; previous completed context was preserved.",
+        "budget_exhausted": "The provider attempt budget was exhausted. Retry later; previous completed context was preserved.",
         "withheld": "The answer was withheld because source access changed. Retry with the current reports.",
     }
     text = labels.get(summary["status"], "Research is in progress.")
@@ -167,6 +200,12 @@ def render_execution(summary):
              f"<p><strong>Query decomposition:</strong> {escape(summary['decomposition'].replace('_', ' '))}</p>"]
     if summary["subqueries"]:
         parts.append("<ol>" + "".join(f"<li>{escape(q)}</li>" for q in summary["subqueries"]) + "</ol>")
+    if summary.get("provider_attempt_limit") is not None:
+        parts.append(f"<p>Provider SDK dispatch attempts (all stages): {summary['provider_attempts']} / "
+                     f"{summary['provider_attempt_limit']} · Retry waiting: {summary['provider_retry_wait_seconds']:.2f}s · "
+                     f"Shared scheduling budget: {summary['provider_time_budget_seconds']:.1f}s</p>")
+        if summary["provider_models"]:
+            parts.append("<p>Models attempted: " + escape(", ".join(summary["provider_models"])) + "</p>")
     if summary["decomposition"] == "fallback":
         parts.append("<p>The optimiser was unavailable or returned invalid queries; the original question was used.</p>")
     parts.append(f"<p><strong>Automated grounding check:</strong> {escape(summary['grounding'].replace('_', ' ').title())}<br>"

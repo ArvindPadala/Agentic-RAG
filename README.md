@@ -39,7 +39,7 @@ The core ReAct Agent is orchestrated using a **LangGraph StateGraph** (`agent.py
 To prevent hallucinations, the system provides visual proof. Using the bounding boxes from the ingestion phase, PyMuPDF crops the exact region of the source PDF, uploads it to AWS S3, and returns a time-limited presigned URL directly in the UI.
 
 ### 1.5 Resilient LLM Routing & Guardrails
-- **Router (`llm_router.py`):** Handles free-tier API rate limits via key rotation, graceful model degradation (e.g., `gemini-3.5-flash` fallback), and jittered exponential backoff.
+- **Router (`llm_router.py`):** Uses request-local key/model routing, selective jittered retries, provider retry guidance, finite SDK timeouts and a shared turn attempt/time budget. See [PROVIDER_RELIABILITY.md](PROVIDER_RELIABILITY.md) for configuration and deadline limitations.
 - **Live Guardrail (`live_guardrail.py`):** An LLM-as-a-judge interceptor that evaluates generated responses against retrieved context to detect hallucinations before streaming to the user.
 
 ---

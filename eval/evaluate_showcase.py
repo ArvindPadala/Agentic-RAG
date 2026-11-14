@@ -147,10 +147,10 @@ def live_case(case, collection, groups, model, mode, guardrail):
     from access_control import RuntimePolicy
     from evidence import EvidenceCollector, authorized_passages, citation_numbers, format_citations
     from execution import ExecutionTrace, IncompleteResponseError
-    from llm_router import GeminiRouter
+    from llm_router import GeminiRouter, ProviderTimeoutError, ProviderAttemptsExceeded
 
     # Fresh router/history/evidence per case. No user memory, Supabase or S3.
-    router = GeminiRouter(settings.GEMINI_API_KEYS, models=[model])
+    router = GeminiRouter(settings.GEMINI_API_KEYS, models=[model], policy=settings.PROVIDER_POLICY)
     collector = EvidenceCollector()
     execution = ExecutionTrace(mode)
     policy = RuntimePolicy("public_demo")
@@ -182,6 +182,10 @@ def live_case(case, collection, groups, model, mode, guardrail):
                               "title": p.title, "pdf_page": p.page + 1, "excerpt": p.excerpt}
                              for p in allowed])
         execution.finish("completed", records, cited)
+    except (ProviderTimeoutError, ProviderAttemptsExceeded) as error:
+        status = "timed_out" if isinstance(error, ProviderTimeoutError) else "budget_exhausted"
+        row.update(status=status, error=error_details(error))
+        execution.finish(status)
     except IncompleteResponseError as error:
         row.update(status="incomplete", error=error_details(error))
         execution.finish("incomplete")
@@ -227,7 +231,9 @@ def review_report(path, *, case_ids=(), recheck_citations=False):
         print("Raw grouped reference syntax (not necessarily invalid): "
               + json.dumps(GROUPED_REFERENCE_RE.findall(row.get("answer", ""))))
         print(json.dumps({key: execution.get(key) for key in (
-            "elapsed", "searches", "generation_calls", "finish_reason", "decomposition", "grounding", "grounding_reason")}, indent=2))
+            "elapsed", "searches", "generation_calls", "provider_attempts", "provider_retry_wait_seconds",
+            "provider_models", "provider_time_budget_seconds", "provider_attempt_limit", "finish_reason",
+            "decomposition", "grounding", "grounding_reason")}, indent=2))
         answer = row.get("answer", "")
         cited_ids = row.get("cited_ids", [])
         if recheck_citations:

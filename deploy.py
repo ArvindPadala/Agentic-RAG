@@ -12,7 +12,7 @@ SPACE_SOURCE_FILES = (
     "live_guardrail.py", "query_optimizer.py", "upload_handler.py",
     "visual_grounding_helper.py", "utils/logger.py", "README.md",
     "requirements.txt", "requirements-prod.txt",
-    "SUPABASE_SETUP.md", "supabase/migrations/202610070001_user_memory.sql",
+    "SUPABASE_SETUP.md", "PROVIDER_RELIABILITY.md", "supabase/migrations/202610070001_user_memory.sql",
 )
 
 def main():

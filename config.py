@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from utils.logger import get_logger
 from access_control import RuntimePolicy
+from llm_router import RouterPolicy
 
 logger = get_logger("config")
 
@@ -40,6 +41,7 @@ class Config:
 
         # API Keys
         self.GEMINI_API_KEY = self._get_required("GEMINI_API_KEY")
+        self.PROVIDER_POLICY = RouterPolicy.from_environment()
         self.GEMINI_API_KEY_2 = self._get_optional("GEMINI_API_KEY_2")
         self.GEMINI_API_KEYS = [self.GEMINI_API_KEY]
         if self.GEMINI_API_KEY_2:
